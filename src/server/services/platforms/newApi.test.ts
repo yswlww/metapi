@@ -14,6 +14,7 @@ interface RequestSnapshot {
 
 const COOKIE_SESSION_TOKEN = 'cookie-session-token';
 const COOKIE_REQUIRES_USER_TOKEN = 'cookie-requires-user';
+const COOKIE_REQUIRES_X_USER_ID_TOKEN = 'cookie-requires-x-user-id';
 const CHECKIN_ALREADY_TOKEN = 'checkin-already-token';
 const CHECKIN_INVALID_URL_TOKEN = 'checkin-invalid-url-token';
 const CHECKIN_INVALID_URL_EXPIRED_SESSION_TOKEN = 'checkin-invalid-url-expired-session-token';
@@ -223,6 +224,11 @@ describe('NewApiAdapter', () => {
           res.end(JSON.stringify({ success: false, message: 'unauthorized' }));
           return;
         }
+        if (typeof req.headers.authorization === 'string' && req.headers.authorization === `Bearer ${COOKIE_REQUIRES_X_USER_ID_TOKEN}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'unauthorized' }));
+          return;
+        }
 
         if (typeof req.headers.cookie === 'string' && req.headers.cookie.includes(`session=${COOKIE_SESSION_TOKEN}`)) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -244,6 +250,21 @@ describe('NewApiAdapter', () => {
           res.end(JSON.stringify({
             data: {
               items: [{ key: 'cookie-user-key' }],
+            },
+          }));
+          return;
+        }
+
+        if (typeof req.headers.cookie === 'string' && req.headers.cookie.includes(`session=${COOKIE_REQUIRES_X_USER_ID_TOKEN}`)) {
+          if (req.headers['x-user-id'] !== '8899') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'missing X-User-Id' }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            data: {
+              items: [{ key: 'cookie-x-user-key' }],
             },
           }));
           return;
@@ -341,6 +362,11 @@ describe('NewApiAdapter', () => {
           res.end(JSON.stringify({ success: false, message: 'invalid token' }));
           return;
         }
+        if (typeof req.headers.authorization === 'string' && req.headers.authorization === `Bearer ${COOKIE_REQUIRES_X_USER_ID_TOKEN}`) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: false, message: 'invalid token' }));
+          return;
+        }
         if (typeof req.headers.authorization === 'string') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: false, message: 'invalid token' }));
@@ -366,6 +392,20 @@ describe('NewApiAdapter', () => {
           res.end(JSON.stringify({
             success: true,
             data: { id: 8899, username: 'cookie-user-id-required', quota: 1500000, used_quota: 100000 },
+          }));
+          return;
+        }
+
+        if (typeof req.headers.cookie === 'string' && req.headers.cookie.includes(`session=${COOKIE_REQUIRES_X_USER_ID_TOKEN}`)) {
+          if (req.headers['x-user-id'] !== '8899') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, message: 'missing X-User-Id' }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            success: true,
+            data: { id: 8899, username: 'cookie-x-user-id-required', quota: 1500000, used_quota: 100000 },
           }));
           return;
         }
@@ -641,6 +681,21 @@ describe('NewApiAdapter', () => {
     ).toBe(true);
   });
 
+  it('auto-probes X-User-Id for cookie session fallback on New API forks', async () => {
+    const adapter = new NewApiAdapter();
+    const result = await adapter.verifyToken(baseUrl, COOKIE_REQUIRES_X_USER_ID_TOKEN);
+
+    expect(result.tokenType).toBe('session');
+    expect(result.userInfo?.username).toBe('cookie-x-user-id-required');
+    expect(result.apiToken).toBe('cookie-x-user-key');
+    expect(
+      requests.some((r) => r.url === '/api/user/self' && r.headers['x-user-id'] === '8899'),
+    ).toBe(true);
+    expect(
+      requests.some((r) => r.url === '/api/token/?p=0&size=100' && r.headers['x-user-id'] === '8899'),
+    ).toBe(true);
+  });
+
   it('solves anyrouter acw challenge and probes user id from session payload', async () => {
     const adapter = new NewApiAdapter();
     const result = await adapter.verifyToken(baseUrl, COOKIE_SHIELDED_TOKEN);
@@ -786,7 +841,7 @@ describe('NewApiAdapter', () => {
     });
     const receivedHeaders: Record<string, string> = {};
     server = createServer((req, res) => {
-      for (const name of ['new-api-user', 'veloera-user', 'voapi-user', 'user-id', 'rix-api-user', 'neo-api-user']) {
+      for (const name of ['new-api-user', 'veloera-user', 'voapi-user', 'user-id', 'x-user-id', 'rix-api-user', 'neo-api-user']) {
         const val = req.headers[name];
         if (val) receivedHeaders[name] = String(val);
       }
@@ -809,6 +864,7 @@ describe('NewApiAdapter', () => {
     expect(receivedHeaders['veloera-user']).toBe('42');
     expect(receivedHeaders['voapi-user']).toBe('42');
     expect(receivedHeaders['user-id']).toBe('42');
+    expect(receivedHeaders['x-user-id']).toBe('42');
     expect(receivedHeaders['rix-api-user']).toBe('42');
     expect(receivedHeaders['neo-api-user']).toBe('42');
   });

@@ -57,6 +57,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     headers['Veloera-User'] = value;
     headers['voapi-user'] = value;
     headers['User-id'] = value;
+    headers['X-User-Id'] = value;
     headers['Rix-Api-User'] = value;
     headers['neo-api-user'] = value;
     return headers;
@@ -771,7 +772,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     for (const cookie of this.buildCookieCandidates(token)) {
       try {
         const headers: Record<string, string> = { Cookie: cookie };
-        if (platformUserId) headers['New-Api-User'] = String(platformUserId);
+        this.appendUserIdCompatibilityHeaders(headers, platformUserId);
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/user/self`, { headers });
         if (res?.success && res?.data) return res;
         if (typeof res?.message === 'string' && res.message.trim()) {
@@ -788,7 +789,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
       for (const id of candidates) {
         try {
           const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/user/self`, {
-            headers: { Cookie: cookie, 'New-Api-User': String(id) },
+            headers: this.appendUserIdCompatibilityHeaders({ Cookie: cookie }, id),
           });
           if (res?.success && res?.data) return id;
         } catch {}
@@ -814,7 +815,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     for (const cookie of this.buildCookieCandidates(token)) {
       try {
         const headers: Record<string, string> = { Cookie: cookie };
-        if (userId) headers['New-Api-User'] = String(userId);
+        this.appendUserIdCompatibilityHeaders(headers, userId);
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/token/?p=0&size=100`, { headers });
         const normalized = this.normalizeTokenItems(this.parseTokenItems(res));
         if (normalized.length > 0) return normalized;
@@ -827,7 +828,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     for (const cookie of this.buildCookieCandidates(token)) {
       try {
         const headers: Record<string, string> = { Cookie: cookie };
-        if (userId) headers['New-Api-User'] = String(userId);
+        this.appendUserIdCompatibilityHeaders(headers, userId);
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/user/models`, { headers });
         if (Array.isArray(res?.data) && res.data.length > 0) return res.data.filter(Boolean);
         if (res?.data && typeof res.data === 'object') {
@@ -1286,7 +1287,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     for (const cookie of this.buildCookieCandidates(accessToken)) {
       try {
         const headers: Record<string, string> = { Cookie: cookie };
-        if (cookieUserId) headers['New-Api-User'] = String(cookieUserId);
+        this.appendUserIdCompatibilityHeaders(headers, cookieUserId);
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/token/`, {
           method: 'POST',
           headers,
@@ -1329,7 +1330,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     const cookieUserId = resolvedUserId || await this.probeUserIdByCookie(baseUrl, accessToken);
     for (const cookie of this.buildCookieCandidates(accessToken)) {
       const headers: Record<string, string> = { Cookie: cookie };
-      if (cookieUserId) headers['New-Api-User'] = String(cookieUserId);
+      this.appendUserIdCompatibilityHeaders(headers, cookieUserId);
 
       try {
         const res = await this.fetchJsonRaw<any>(`${baseUrl}/api/user/self/groups`, { headers });
@@ -1397,7 +1398,7 @@ export class NewApiAdapter extends BasePlatformAdapter {
     const cookieUserId = resolvedUserId || await this.probeUserIdByCookie(baseUrl, accessToken);
     for (const cookie of this.buildCookieCandidates(accessToken)) {
       const headers: Record<string, string> = { Cookie: cookie };
-      if (cookieUserId) headers['New-Api-User'] = String(cookieUserId);
+      this.appendUserIdCompatibilityHeaders(headers, cookieUserId);
 
       try {
         if (!tokenId) {
