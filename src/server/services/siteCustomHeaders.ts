@@ -13,8 +13,12 @@ const REQUEST_AUTHORITATIVE_HEADER_NAMES = new Set([
   'content-length',
   'cookie',
   'host',
+  'keep-alive',
   'proxy-authorization',
+  'te',
+  'trailer',
   'transfer-encoding',
+  'upgrade',
   'x-api-key',
   'x-goog-api-key',
 ]);

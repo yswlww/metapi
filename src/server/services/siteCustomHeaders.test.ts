@@ -57,6 +57,21 @@ describe('mergeHeadersWithSiteCustomHeaders', () => {
     expect(merged.get(headerName)).toBe(requestValue);
   });
 
+  it.each([
+    'keep-alive',
+    'te',
+    'trailer',
+    'upgrade',
+  ])('keeps request %s transport headers authoritative with site priority', (headerName) => {
+    const merged = new Headers(mergeHeadersWithSiteCustomHeaders(
+      { [headerName]: 'site-value' },
+      { [headerName]: 'request-value' },
+      { priority: 'site' },
+    ));
+
+    expect(merged.get(headerName)).toBe('request-value');
+  });
+
   it('keeps request transport and credential headers authoritative with site priority', () => {
     const merged = new Headers(mergeHeadersWithSiteCustomHeaders(
       {
