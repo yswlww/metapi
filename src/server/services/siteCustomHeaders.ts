@@ -1,6 +1,21 @@
 import { Headers, type HeadersInit } from 'undici';
 
 export type SiteCustomHeadersRecord = Record<string, string>;
+export type SiteCustomHeadersMergePriority = 'request' | 'site';
+
+export type SiteCustomHeadersMergeOptions = {
+  priority?: SiteCustomHeadersMergePriority;
+};
+
+const REQUEST_AUTHORITATIVE_HEADER_NAMES = new Set([
+  'authorization',
+  'connection',
+  'content-length',
+  'cookie',
+  'host',
+  'proxy-authorization',
+  'transfer-encoding',
+]);
 
 export type ParsedSiteCustomHeadersInput = {
   present: boolean;
@@ -105,13 +120,15 @@ export function readSiteCustomHeaders(input: unknown): SiteCustomHeadersRecord |
 export function mergeHeadersWithSiteCustomHeaders(
   siteCustomHeaders: unknown,
   requestHeaders?: HeadersInit,
+  options: SiteCustomHeadersMergeOptions = {},
 ): HeadersInit | undefined {
   const normalizedSiteHeaders = readSiteCustomHeaders(siteCustomHeaders);
   if (!normalizedSiteHeaders) {
     return requestHeaders;
   }
 
-  const merged = new Headers(normalizedSiteHeaders);
+  const siteHeaders = new Headers(normalizedSiteHeaders);
+  const merged = new Headers(siteHeaders);
   if (requestHeaders) {
     const explicitHeaders = new Headers(requestHeaders);
     explicitHeaders.forEach((value, key) => {
@@ -119,9 +136,17 @@ export function mergeHeadersWithSiteCustomHeaders(
     });
   }
 
-  const siteUserAgent = new Headers(normalizedSiteHeaders).get('user-agent');
-  if (siteUserAgent !== null) {
-    merged.set('user-agent', siteUserAgent);
+  if (options.priority === 'site') {
+    siteHeaders.forEach((value, key) => {
+      if (!REQUEST_AUTHORITATIVE_HEADER_NAMES.has(key)) {
+        merged.set(key, value);
+      }
+    });
+  } else {
+    const siteUserAgent = siteHeaders.get('user-agent');
+    if (siteUserAgent !== null) {
+      merged.set('user-agent', siteUserAgent);
+    }
   }
 
   return merged;

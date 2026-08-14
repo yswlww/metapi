@@ -48,6 +48,10 @@ function normalizeUseSystemProxyFlag(input: unknown): boolean | null {
   return normalizePinnedFlag(input);
 }
 
+function normalizeCustomHeadersOverrideRequestHeadersFlag(input: unknown): boolean | null {
+  return normalizePinnedFlag(input);
+}
+
 function normalizeSortOrder(input: unknown): number | null {
   if (input === undefined || input === null || input === '') return null;
   const parsed = Number.parseInt(String(input), 10);
@@ -472,6 +476,7 @@ export async function sitesRoutes(app: FastifyInstance) {
       proxyUrl,
       useSystemProxy,
       customHeaders,
+      customHeadersOverrideRequestHeaders,
       externalCheckinUrl,
       status,
       isPinned,
@@ -510,6 +515,16 @@ export async function sitesRoutes(app: FastifyInstance) {
     const normalizedCustomHeaders = parseSiteCustomHeadersInput(customHeaders);
     if (!normalizedCustomHeaders.valid) {
       return reply.code(400).send({ error: normalizedCustomHeaders.error || 'Invalid customHeaders.' });
+    }
+    const normalizedCustomHeadersOverrideRequestHeaders =
+      normalizeCustomHeadersOverrideRequestHeadersFlag(customHeadersOverrideRequestHeaders);
+    if (
+      customHeadersOverrideRequestHeaders !== undefined
+      && normalizedCustomHeadersOverrideRequestHeaders === null
+    ) {
+      return reply.code(400).send({
+        error: 'Invalid customHeadersOverrideRequestHeaders value. Expected boolean.',
+      });
     }
     const explicitInitializationPreset = initializationPresetId == null || initializationPresetId === ''
       ? null
@@ -560,6 +575,7 @@ export async function sitesRoutes(app: FastifyInstance) {
           proxyUrl: normalizedProxyUrl.proxyUrl,
           useSystemProxy: normalizedUseSystemProxy ?? false,
           customHeaders: normalizedCustomHeaders.customHeaders,
+          customHeadersOverrideRequestHeaders: normalizedCustomHeadersOverrideRequestHeaders ?? false,
           externalCheckinUrl: normalizedExternalCheckinUrl.url,
           status: normalizedStatus ?? 'active',
           isPinned: normalizedPinned ?? false,
@@ -651,6 +667,16 @@ export async function sitesRoutes(app: FastifyInstance) {
     if (!normalizedCustomHeaders.valid) {
       return reply.code(400).send({ error: normalizedCustomHeaders.error || 'Invalid customHeaders.' });
     }
+    const normalizedCustomHeadersOverrideRequestHeaders =
+      normalizeCustomHeadersOverrideRequestHeadersFlag(body.customHeadersOverrideRequestHeaders);
+    if (
+      body.customHeadersOverrideRequestHeaders !== undefined
+      && normalizedCustomHeadersOverrideRequestHeaders === null
+    ) {
+      return reply.code(400).send({
+        error: 'Invalid customHeadersOverrideRequestHeaders value. Expected boolean.',
+      });
+    }
     const normalizedApiEndpoints = normalizeSiteApiEndpointsInput(body.apiEndpoints);
     if (!normalizedApiEndpoints.valid) {
       return reply.code(400).send({ error: normalizedApiEndpoints.error || 'Invalid apiEndpoints.' });
@@ -683,6 +709,9 @@ export async function sitesRoutes(app: FastifyInstance) {
     if (normalizedProxyUrl.present) updates.proxyUrl = normalizedProxyUrl.proxyUrl;
     if (body.useSystemProxy !== undefined) updates.useSystemProxy = normalizedUseSystemProxy;
     if (normalizedCustomHeaders.present) updates.customHeaders = normalizedCustomHeaders.customHeaders;
+    if (body.customHeadersOverrideRequestHeaders !== undefined) {
+      updates.customHeadersOverrideRequestHeaders = normalizedCustomHeadersOverrideRequestHeaders;
+    }
     if (normalizedExternalCheckinUrl.present) updates.externalCheckinUrl = normalizedExternalCheckinUrl.url;
     if (body.status !== undefined) updates.status = normalizedStatus;
     if (body.isPinned !== undefined) updates.isPinned = normalizedPinned;

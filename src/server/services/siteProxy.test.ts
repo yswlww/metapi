@@ -197,6 +197,34 @@ describe('siteProxy', () => {
     expect(headers.get('x-trace-id')).toBe('trace-1');
   });
 
+  it('lets matched site custom headers override ordinary headers without replacing request authorization', async () => {
+    await db.insert(schema.sites).values({
+      name: 'headers-override-site',
+      url: 'https://headers-override-site.example.com',
+      platform: 'new-api',
+      customHeaders: JSON.stringify({
+        Authorization: 'Bearer site-default',
+        'X-Client-Version': 'site-version',
+      }),
+      customHeadersOverrideRequestHeaders: true,
+    }).run();
+
+    const { withSiteProxyRequestInit } = await import('./siteProxy.js');
+    const requestInit = await withSiteProxyRequestInit('https://headers-override-site.example.com/v1/models', {
+      method: 'GET',
+      headers: {
+        authorization: 'Bearer request-token',
+        'x-client-version': 'request-version',
+        'X-Trace-Id': 'trace-1',
+      },
+    });
+    const headers = new Headers(requestInit.headers);
+
+    expect(headers.get('authorization')).toBe('Bearer request-token');
+    expect(headers.get('x-client-version')).toBe('site-version');
+    expect(headers.get('x-trace-id')).toBe('trace-1');
+  });
+
   it('merges site custom headers from site records even without cache lookup', async () => {
     const { withSiteRecordProxyRequestInit } = await import('./siteProxy.js');
     const requestInit = withSiteRecordProxyRequestInit({
@@ -216,6 +244,27 @@ describe('siteProxy', () => {
     expect(headers.get('x-site-scope')).toBe('site-level');
     expect(headers.get('x-request-id')).toBe('req-1');
     expect('dispatcher' in requestInit).toBe(true);
+  });
+
+  it('lets direct site record headers override ordinary headers without replacing request authorization', async () => {
+    const { withSiteRecordProxyRequestInit } = await import('./siteProxy.js');
+    const requestInit = withSiteRecordProxyRequestInit({
+      customHeaders: JSON.stringify({
+        Authorization: 'Bearer site-default',
+        'X-Client-Version': 'site-version',
+      }),
+      customHeadersOverrideRequestHeaders: true,
+    }, {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer request-token',
+        'x-client-version': 'request-version',
+      },
+    });
+    const headers = new Headers(requestInit.headers);
+
+    expect(headers.get('authorization')).toBe('Bearer request-token');
+    expect(headers.get('x-client-version')).toBe('site-version');
   });
 
   it('lets site custom user-agent override client user-agent while keeping request auth authoritative', async () => {

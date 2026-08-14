@@ -143,11 +143,12 @@ describe('databaseMigrationService', () => {
     expect(normalized.ssl).toBe(false);
   });
 
-  it.each(['postgres', 'mysql', 'sqlite'] as const)('creates or patches sites schema with use_system_proxy and custom_headers for %s', async (dialect) => {
+  it.each(['postgres', 'mysql', 'sqlite'] as const)('creates or patches sites schema with custom header priority columns for %s', async (dialect) => {
     const executedSql: string[] = [];
     const liveContract = cloneContract(currentContract);
     delete liveContract.tables.sites.columns.use_system_proxy;
     delete liveContract.tables.sites.columns.custom_headers;
+    delete liveContract.tables.sites.columns.custom_headers_override_request_headers;
 
     await __databaseMigrationServiceTestUtils.ensureSchema({
       dialect,
@@ -169,9 +170,11 @@ describe('databaseMigrationService', () => {
 
     const useSystemProxySql = executedSql.find((sqlText) => sqlText.includes('use_system_proxy'));
     const customHeadersSql = executedSql.find((sqlText) => sqlText.includes('custom_headers'));
+    const customHeadersOverrideSql = executedSql.find((sqlText) => sqlText.includes('custom_headers_override_request_headers'));
 
     expect(useSystemProxySql).toContain('use_system_proxy');
     expect(customHeadersSql).toContain('custom_headers');
+    expect(customHeadersOverrideSql).toContain('custom_headers_override_request_headers');
   });
 
   it.each(['postgres', 'mysql'] as const)('patches token_routes decision snapshot columns for %s', async (dialect) => {
@@ -202,7 +205,7 @@ describe('databaseMigrationService', () => {
     ).toBe(true);
   });
 
-  it('includes useSystemProxy and customHeaders when building site migration statements', () => {
+  it('preserves site proxy, custom header, and probe settings in SQLite migration statements', () => {
     const statements = __databaseMigrationServiceTestUtils.buildStatements({
       version: 'test',
       timestamp: Date.now(),
@@ -214,6 +217,11 @@ describe('databaseMigrationService', () => {
           platform: 'openai',
           useSystemProxy: true,
           customHeaders: '{"x-site-scope":"internal"}',
+          customHeadersOverrideRequestHeaders: true,
+          postRefreshProbeEnabled: true,
+          postRefreshProbeModel: 'gpt-5-mini',
+          postRefreshProbeScope: 'all',
+          postRefreshProbeLatencyThresholdMs: 2500,
           status: 'active',
         }],
         siteAnnouncements: [],
@@ -239,11 +247,26 @@ describe('databaseMigrationService', () => {
     const siteStatement = statements.find((statement) => statement.table === 'sites');
     const useSystemProxyIndex = siteStatement?.columns.indexOf('use_system_proxy') ?? -1;
     const customHeadersIndex = siteStatement?.columns.indexOf('custom_headers') ?? -1;
+    const customHeadersOverrideIndex = siteStatement?.columns.indexOf('custom_headers_override_request_headers') ?? -1;
+    const postRefreshProbeEnabledIndex = siteStatement?.columns.indexOf('post_refresh_probe_enabled') ?? -1;
+    const postRefreshProbeModelIndex = siteStatement?.columns.indexOf('post_refresh_probe_model') ?? -1;
+    const postRefreshProbeScopeIndex = siteStatement?.columns.indexOf('post_refresh_probe_scope') ?? -1;
+    const postRefreshProbeLatencyThresholdIndex = siteStatement?.columns.indexOf('post_refresh_probe_latency_threshold_ms') ?? -1;
 
     expect(useSystemProxyIndex).toBeGreaterThanOrEqual(0);
     expect(siteStatement?.values[useSystemProxyIndex]).toBe(true);
     expect(customHeadersIndex).toBeGreaterThanOrEqual(0);
     expect(siteStatement?.values[customHeadersIndex]).toBe('{"x-site-scope":"internal"}');
+    expect(customHeadersOverrideIndex).toBeGreaterThanOrEqual(0);
+    expect(siteStatement?.values[customHeadersOverrideIndex]).toBe(true);
+    expect(postRefreshProbeEnabledIndex).toBeGreaterThanOrEqual(0);
+    expect(siteStatement?.values[postRefreshProbeEnabledIndex]).toBe(true);
+    expect(postRefreshProbeModelIndex).toBeGreaterThanOrEqual(0);
+    expect(siteStatement?.values[postRefreshProbeModelIndex]).toBe('gpt-5-mini');
+    expect(postRefreshProbeScopeIndex).toBeGreaterThanOrEqual(0);
+    expect(siteStatement?.values[postRefreshProbeScopeIndex]).toBe('all');
+    expect(postRefreshProbeLatencyThresholdIndex).toBeGreaterThanOrEqual(0);
+    expect(siteStatement?.values[postRefreshProbeLatencyThresholdIndex]).toBe(2500);
   });
 
   it('includes site api endpoints when building migration statements', () => {
