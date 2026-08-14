@@ -24,6 +24,10 @@ function expectCallsRebuildRoutesOnly(source: string): void {
   expect(source).toMatch(/\brouteRefreshWorkflow\.rebuildRoutesOnly\s*\(/);
 }
 
+function expectImportsPatternRouteChannelSync(source: string): void {
+  expect(source).toMatch(/from\s+['"][^'"]*patternRouteChannelSyncService\.js['"]/m);
+}
+
 describe('route refresh workflow architecture boundaries', () => {
   it('keeps api controllers on the shared route refresh workflow instead of modelService', () => {
     const tokensSource = readSource('./tokens.ts');
@@ -37,6 +41,18 @@ describe('route refresh workflow architecture boundaries', () => {
 
     expectCallsRebuildRoutesOnly(tokensSource);
     expectCallsRebuildRoutesOnly(statsSource);
+  });
+
+  it('keeps pattern channel reconciliation behind the shared sync service', () => {
+    const tokensSource = readSource('./tokens.ts');
+    const modelServiceSource = readSource('../../services/modelService.ts');
+
+    expectImportsPatternRouteChannelSync(tokensSource);
+    expectImportsPatternRouteChannelSync(modelServiceSource);
+    expect(tokensSource).toMatch(/\bsyncPatternRouteChannelsAfterAffectedRouteChanges\s*\(/);
+    expect(modelServiceSource).toMatch(/\breconcilePatternRouteChannels\s*\(/);
+    expect(tokensSource).not.toMatch(/async function getPatternTokenCandidates\s*\(/);
+    expect(modelServiceSource).not.toMatch(/const desiredSourceModelsByKey\s*=/);
   });
 
   it('keeps proxy fallback refreshes and scheduler hooks on the route refresh workflow', () => {

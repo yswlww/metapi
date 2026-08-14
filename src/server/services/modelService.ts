@@ -17,7 +17,11 @@ import {
   resolvePlatformUserId,
   supportsDirectAccountRoutingConnection,
 } from './accountExtraConfig.js';
-import { invalidateTokenRouterCache, matchesModelPattern } from './tokenRouter.js';
+import { invalidateTokenRouterCache } from './tokenRouter.js';
+import {
+  reconcilePatternRouteChannels,
+  type PatternRouteChannelCandidate,
+} from './patternRouteChannelSyncService.js';
 import { getBlockedBrandRules, isModelBlockedByBrand } from './brandMatcher.js';
 import { config } from '../config.js';
 import { setAccountRuntimeHealth } from './accountHealthService.js';
@@ -1527,71 +1531,6 @@ export async function rebuildTokenRoutesFromAvailability() {
       continue;
     }
     if (!isExactModelPattern(modelPattern)) {
-      const routeChannels = channels.filter((channel) => channel.routeId === route.id);
-      const desiredCandidates = new Map<string, {
-        accountId: number;
-        tokenId: number | null;
-        oauthRouteUnitId: number | null;
-        sourceModel: string;
-      }>();
-      for (const [modelName, candidateMap] of modelCandidates.entries()) {
-        if (!matchesModelPattern(modelName, modelPattern)) continue;
-        for (const candidate of candidateMap.values()) {
-          const desired = { ...candidate, sourceModel: modelName };
-          desiredCandidates.set(`${buildCandidateKey(candidate)}:${modelName}`, desired);
-        }
-      }
-
-      const desiredKeys = new Set<string>();
-      const desiredSourceModelsByKey = new Map<string, Set<string>>();
-      for (const candidate of desiredCandidates.values()) {
-        const candidateKey = buildCandidateKey(candidate);
-        desiredKeys.add(candidateKey);
-        const normalizedSourceModel = candidate.sourceModel.trim().toLowerCase();
-        if (!desiredSourceModelsByKey.has(candidateKey)) desiredSourceModelsByKey.set(candidateKey, new Set());
-        desiredSourceModelsByKey.get(candidateKey)!.add(normalizedSourceModel);
-      }
-
-      for (const channel of routeChannels) {
-        if (channel.manualOverride) continue;
-        const channelKey = buildChannelKey(channel);
-        const normalizedSourceModel = (channel.sourceModel || '').trim().toLowerCase();
-        const sourceModels = desiredSourceModelsByKey.get(channelKey);
-        if (desiredKeys.has(channelKey) && sourceModels?.has(normalizedSourceModel)) continue;
-        await db.delete(schema.routeChannels).where(eq(schema.routeChannels.id, channel.id)).run();
-        const index = channels.findIndex((item) => item.id === channel.id);
-        if (index >= 0) channels.splice(index, 1);
-        const routeIndex = routeChannels.findIndex((item) => item.id === channel.id);
-        if (routeIndex >= 0) routeChannels.splice(routeIndex, 1);
-        removedChannels++;
-      }
-
-      for (const candidate of desiredCandidates.values()) {
-        const exists = routeChannels.some((channel) => (
-          buildChannelKey(channel) === buildCandidateKey(candidate)
-          && (channel.sourceModel || '').trim().toLowerCase() === candidate.sourceModel.trim().toLowerCase()
-        ));
-        if (exists) continue;
-
-        const inserted = await db.insert(schema.routeChannels).values({
-          routeId: route.id,
-          accountId: candidate.accountId,
-          tokenId: candidate.tokenId,
-          oauthRouteUnitId: candidate.oauthRouteUnitId,
-          sourceModel: candidate.sourceModel,
-          priority: 0,
-          weight: 10,
-          enabled: true,
-          manualOverride: false,
-        }).run();
-        const insertedId = getInsertedRowId(inserted);
-        if (insertedId == null) continue;
-        const created = await db.select().from(schema.routeChannels).where(eq(schema.routeChannels.id, insertedId)).get();
-        if (!created) continue;
-        channels.push(created);
-        routeChannels.push(created);
-        createdChannels++;
-      }
       continue;
     }
     if (latestModelNames.has(modelPattern)) {
@@ -1611,6 +1550,25 @@ export async function rebuildTokenRoutesFromAvailability() {
       removedRoutes += deleted;
     }
   }
+
+  const desiredPatternCandidates: PatternRouteChannelCandidate[] = [];
+  for (const [modelName, candidateMap] of modelCandidates.entries()) {
+    for (const candidate of candidateMap.values()) {
+      desiredPatternCandidates.push({
+        ...candidate,
+        sourceModel: modelName,
+        matchModel: modelName,
+        priority: 0,
+        weight: 10,
+        enabled: true,
+      });
+    }
+  }
+  const patternRouteSync = await reconcilePatternRouteChannels({
+    desiredCandidates: desiredPatternCandidates,
+  });
+  createdChannels += patternRouteSync.createdChannels;
+  removedChannels += patternRouteSync.removedChannels;
 
   if (createdRoutes > 0 || createdChannels > 0 || removedChannels > 0 || removedRoutes > 0) {
     await clearAllRouteDecisionSnapshots();

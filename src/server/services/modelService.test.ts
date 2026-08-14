@@ -29,6 +29,7 @@ describe('rebuildTokenRoutesFromAvailability', () => {
   beforeEach(async () => {
     await db.delete(schema.routeChannels).run();
     await db.delete(schema.tokenRoutes).run();
+    await db.delete(schema.siteDisabledModels).run();
     await db.delete(schema.tokenModelAvailability).run();
     await db.delete(schema.modelAvailability).run();
     await db.delete(schema.accountTokens).run();
@@ -365,17 +366,22 @@ describe('rebuildTokenRoutesFromAvailability', () => {
       enabled: true,
     }).returning().get();
 
+    const retainedChannel = await db.insert(schema.routeChannels).values({
+      routeId: wildcardRoute.id,
+      accountId: account.id,
+      tokenId: token.id,
+      sourceModel: 'Claude-Opus-4-5',
+      priority: 0,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+      successCount: 13,
+      failCount: 2,
+      totalLatencyMs: 789,
+      totalCost: 4.5,
+      lastUsedAt: '2026-08-14T11:00:00.000Z',
+    }).returning().get();
     await db.insert(schema.routeChannels).values([
-      {
-        routeId: wildcardRoute.id,
-        accountId: account.id,
-        tokenId: token.id,
-        sourceModel: 'Claude-Opus-4-5',
-        priority: 0,
-        weight: 10,
-        enabled: true,
-        manualOverride: false,
-      },
       {
         routeId: wildcardRoute.id,
         accountId: account.id,
@@ -410,6 +416,64 @@ describe('rebuildTokenRoutesFromAvailability', () => {
       'Claude-Opus-4-5',
       'claude-manual',
     ]);
+    expect(wildcardChannels.find((channel) => channel.id === retainedChannel.id)).toMatchObject({
+      id: retainedChannel.id,
+      sourceModel: 'Claude-Opus-4-5',
+      successCount: 13,
+      failCount: 2,
+      totalLatencyMs: 789,
+      totalCost: 4.5,
+      lastUsedAt: '2026-08-14T11:00:00.000Z',
+    });
+  });
+
+  it('passes only modelService-filtered candidates to pattern reconciliation', async () => {
+    const site = await db.insert(schema.sites).values({
+      name: 'filtered-pattern-site',
+      url: 'https://filtered-pattern.example.com',
+      platform: 'new-api',
+    }).returning().get();
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id,
+      username: 'filtered-pattern-user',
+      accessToken: 'filtered-access',
+      status: 'active',
+    }).returning().get();
+    const token = await db.insert(schema.accountTokens).values({
+      accountId: account.id,
+      name: 'filtered-token',
+      token: 'sk-filtered',
+      source: 'manual',
+      enabled: true,
+      isDefault: true,
+    }).returning().get();
+    await db.insert(schema.tokenModelAvailability).values({
+      tokenId: token.id,
+      modelName: 'blocked-model',
+      available: true,
+    }).run();
+    await db.insert(schema.siteDisabledModels).values({
+      siteId: site.id,
+      modelName: 'blocked-model',
+    }).run();
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'blocked-*',
+      enabled: true,
+    }).returning().get();
+    await db.insert(schema.routeChannels).values({
+      routeId: patternRoute.id,
+      accountId: account.id,
+      tokenId: token.id,
+      sourceModel: 'blocked-model',
+      enabled: true,
+      manualOverride: false,
+    }).run();
+
+    const rebuild = await rebuildTokenRoutesFromAvailability();
+
+    expect(rebuild.models).toBe(0);
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, patternRoute.id)).all()).toHaveLength(0);
   });
 
   it('removes stale exact routes and keeps wildcard routes on rebuild', async () => {
