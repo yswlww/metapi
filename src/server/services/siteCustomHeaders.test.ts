@@ -44,6 +44,19 @@ describe('mergeHeadersWithSiteCustomHeaders', () => {
     expect(merged.get('x-trace-id')).toBe('trace-1');
   });
 
+  it.each([
+    ['x-api-key', 'request-api-key', 'site-api-key'],
+    ['x-goog-api-key', 'request-google-key', 'site-google-key'],
+  ])('keeps request %s credentials authoritative with site priority', (headerName, requestValue, siteValue) => {
+    const merged = new Headers(mergeHeadersWithSiteCustomHeaders(
+      { [headerName]: siteValue },
+      { [headerName]: requestValue },
+      { priority: 'site' },
+    ));
+
+    expect(merged.get(headerName)).toBe(requestValue);
+  });
+
   it('keeps request transport and credential headers authoritative with site priority', () => {
     const merged = new Headers(mergeHeadersWithSiteCustomHeaders(
       {

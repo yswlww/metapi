@@ -15,6 +15,8 @@ const REQUEST_AUTHORITATIVE_HEADER_NAMES = new Set([
   'host',
   'proxy-authorization',
   'transfer-encoding',
+  'x-api-key',
+  'x-goog-api-key',
 ]);
 
 export type ParsedSiteCustomHeadersInput = {
