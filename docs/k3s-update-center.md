@@ -272,6 +272,50 @@ helm template metapi /opt/metapi-k3s/chart \
 
 那说明这份 chart 还是 tag 语义，先不要继续配置更新中心。
 
+### 1.2 可选：引用已有的环境变量 Secret
+
+默认的 `existingSecret: ""` 会继续由 chart 渲染环境变量 Secret，并保留对 `AUTH_TOKEN`、`PROXY_TOKEN` 以及非 SQLite `DB_URL` 的必填校验。如果你已经通过 External Secrets Operator、Sealed Secrets 或其他独立流程管理 Secret，可以把 `existingSecret` 设置为那个 Secret 的名称；此时 chart 不再渲染自己的 Secret，也不会添加 `checksum/env-secret` 注解。
+
+外部 Secret 必须是 **Metapi 专用、已经存在、并且与 Helm release 位于同一 namespace** 的 Secret。`envFrom` 会把其中所有合法键注入容器，因此不要复用还包含其他应用配置的共享 Secret。建议让外部 Secret 明确提供 chart 原本管理的全部键：
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: metapi-runtime-env
+  namespace: ai
+type: Opaque
+stringData:
+  AUTH_TOKEN: <strong-admin-token>
+  PROXY_TOKEN: <strong-proxy-token>
+  DB_TYPE: postgres
+  DB_URL: <postgres-connection-url>
+  DB_SSL: "false"
+  DATA_DIR: /app/data
+  PORT: "4000"
+  TZ: Asia/Shanghai
+  CHECKIN_CRON: "0 8 * * *"
+  BALANCE_REFRESH_CRON: "0 * * * *"
+  DEPLOY_HELPER_TOKEN: <helper-token>
+```
+
+创建并核对这个 Secret 后，再显式启用外部 Secret 模式：
+
+```bash
+helm upgrade --install metapi /opt/metapi-k3s/chart \
+  --namespace ai \
+  --set-string existingSecret=metapi-runtime-env
+```
+
+> [!CAUTION]
+> `envFrom` 只负责注入已经存在的键，Helm 和 Kubernetes 不会替 chart 校验外部 Secret 是否包含必填键。外部 Secret 不完整时，应用可能采用自身默认值；例如缺少 `AUTH_TOKEN` 或 `PROXY_TOKEN` 时，已知回退值分别是 `change-me-admin-token` 和 `change-me-proxy-sk-token`。这些值只适合本地调试，绝不能当成生产保护。部署前应逐项检查 Secret 的键，并在 Pod 内确认实际配置符合预期。
+
+还要注意以下运维边界：
+
+- 不要再通过 `--set env.authToken=...`、`--set env.proxyToken=...` 或普通 values 文件传递这些 Secret 值，否则它们仍可能进入 Helm release values 和 `helm history` 对应的历史 revision。改用外部 Secret 不会清除旧 revision 中已经保存的数据，需要单独轮换泄露过的凭据并按你的保留策略处理历史记录。
+- 迁移现有 release 时，外部 Secret 应使用不同于 chart 当前生成名称（通常是 `<release-fullname>-env`）的新名称。不要预创建同名对象并期待 Helm 自动“接管”，也不要直接把 `existingSecret` 指向原来由 chart 管理的同名 Secret；升级时旧的受管资源可能被删除，导致 Deployment 引用一个不存在的 Secret。
+- 外部 Secret 更新后，Pod 模板没有 `checksum/env-secret` 变化，因此不会自动滚动。确认新数据已经同步后，需要手动执行例如 `kubectl rollout restart deployment/metapi -n ai`，再用 `kubectl rollout status` 验证新 Pod 已就绪。
+
 ### 2. 让主 Metapi 和 helper 用同一个 token
 
 主 Metapi 端支持这两个环境变量，设置一个即可：

@@ -42,8 +42,27 @@ describe('k3s deploy assets', () => {
     expect(normalizedServiceTemplate).toContain('{{- if and (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) .Values.service.nodePort }}');
     expect(helpersTemplate).toContain('define "metapi.envSecretName"');
     expect(helpersTemplate).toContain('printf "%s-env"');
-    expect(deploymentTemplate).toContain('include "metapi.envSecretName"');
+    expect(deploymentTemplate).toContain('include "metapi.envSecretRefName"');
     expect(readRepoFile('deploy/k3s/chart/templates/secret.yaml')).toContain('include "metapi.envSecretName"');
+  });
+
+  it('supports a quoted external env Secret without rendering the managed Secret or checksum', () => {
+    const values = readRepoFile('deploy/k3s/chart/values.yaml');
+    const helpersTemplate = readRepoFile('deploy/k3s/chart/templates/_helpers.tpl');
+    const deploymentTemplate = readRepoFile('deploy/k3s/chart/templates/deployment.yaml');
+    const secretTemplate = readRepoFile('deploy/k3s/chart/templates/secret.yaml');
+    const normalizedHelpersTemplate = normalizeWhitespace(helpersTemplate);
+    const normalizedDeploymentTemplate = normalizeWhitespace(deploymentTemplate);
+
+    expect(values).toMatch(/^existingSecret: ""$/m);
+    expect(normalizedHelpersTemplate).toContain('{{- define "metapi.envSecretRefName" -}} {{- default (include "metapi.envSecretName" .) .Values.existingSecret -}} {{- end -}}');
+    expect(normalizedDeploymentTemplate).toContain('{{- if not .Values.existingSecret }} checksum/env-secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum | quote }} {{- end }}');
+    expect(deploymentTemplate).toContain('name: {{ include "metapi.envSecretRefName" . | quote }}');
+    expect(secretTemplate.startsWith('{{- if not .Values.existingSecret }}\n')).toBe(true);
+    expect(secretTemplate.endsWith('{{- end }}\n')).toBe(true);
+    expect(secretTemplate).toContain('required "env.authToken is required"');
+    expect(secretTemplate).toContain('required "env.proxyToken is required"');
+    expect(secretTemplate).toContain('required "env.dbUrl is required when env.dbType is mysql/postgres"');
   });
 
   it('keeps the helper manifest on a pull policy that can pick up fresh latest tags', () => {
@@ -63,5 +82,11 @@ describe('k3s deploy assets', () => {
     expect(docs).toContain('image.digest');
     expect(docs).toContain('imagePullPolicy: Always');
     expect(docs).toContain('repository@digest');
+    expect(docs).toContain('existingSecret');
+    expect(docs).toContain('envFrom');
+    expect(docs).toContain('change-me-admin-token');
+    expect(docs).toContain('change-me-proxy-sk-token');
+    expect(docs).toContain('helm history');
+    expect(docs).toContain('kubectl rollout restart');
   });
 });

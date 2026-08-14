@@ -27,7 +27,9 @@ spec:
       annotations:
         metapi/image-tag: {{ .Values.image.tag | quote }}
         metapi/image-digest: {{ .Values.image.digest | quote }}
+        {{- if not .Values.existingSecret }}
         checksum/env-secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum | quote }}
+        {{- end }}
     spec:
       containers:
         - name: metapi
@@ -35,7 +37,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           envFrom:
             - secretRef:
-                name: {{ include "metapi.envSecretName" . }}
+                name: {{ include "metapi.envSecretRefName" . | quote }}
           ports:
             - name: http
               containerPort: 4000

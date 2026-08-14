@@ -19,6 +19,10 @@
 {{- printf "%s-env" (include "metapi.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "metapi.envSecretRefName" -}}
+{{- default (include "metapi.envSecretName" .) .Values.existingSecret -}}
+{{- end -}}
+
 {{- define "metapi.labels" -}}
 app.kubernetes.io/name: {{ include "metapi.name" . }}
 helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}

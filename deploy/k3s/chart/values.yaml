@@ -19,6 +19,8 @@ deployment:
 persistence:
   hostPath: /opt/1panel/docker/compose/metapihub/data
 
+existingSecret: ""
+
 env:
   authToken: ""
   proxyToken: ""
