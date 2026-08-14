@@ -288,6 +288,11 @@ Metapi 当前的配置关系可以概括为：
 | `TELEGRAM_ENABLED` | 启用 Telegram 通知 | `false` |
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token（形如 `123456:abc`） | 空 |
 | `TELEGRAM_CHAT_ID` | 接收消息的 Chat ID（如 `-100xxxx` 或 `@channel`） | 空 |
+| `TELEGRAM_API_BASE_URL` | Telegram Bot API 基地址；会去除首尾空白和末尾 `/` | `https://api.telegram.org` |
+| `TELEGRAM_MESSAGE_THREAD_ID` | Telegram Topic ID | 空 |
+| `TELEGRAM_USE_SYSTEM_PROXY` | Telegram 请求是否使用系统代理 | `false` |
+
+这些环境变量用于提供首次启动默认值；在「通知设置」中保存的持久化配置仍然优先。
 
 **配置步骤：**
 

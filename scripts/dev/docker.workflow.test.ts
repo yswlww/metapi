@@ -2,6 +2,49 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+const composeSources = [
+  ['docker/docker-compose.yml', readFileSync(resolve(process.cwd(), 'docker/docker-compose.yml'), 'utf8')],
+  ['README.md', readFileSync(resolve(process.cwd(), 'README.md'), 'utf8')],
+  ['README_EN.md', readFileSync(resolve(process.cwd(), 'README_EN.md'), 'utf8')],
+  ['docs/getting-started.md', readFileSync(resolve(process.cwd(), 'docs/getting-started.md'), 'utf8')],
+] as const;
+
+const expectedComposeVariables = [
+  'ACCOUNT_CREDENTIAL_SECRET',
+  'AUTH_TOKEN',
+  'CHECKIN_CRON',
+  'BALANCE_REFRESH_CRON',
+  'PROXY_TOKEN',
+  'PORT',
+  'NOTIFY_COOLDOWN_SEC',
+  'ADMIN_IP_ALLOWLIST',
+  'SYSTEM_PROXY_URL',
+  'TELEGRAM_ENABLED',
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_CHAT_ID',
+  'TELEGRAM_API_BASE_URL',
+  'TELEGRAM_MESSAGE_THREAD_ID',
+  'TELEGRAM_USE_SYSTEM_PROXY',
+  'TZ',
+] as const;
+
+const expectedComposeMappings = [
+  'ACCOUNT_CREDENTIAL_SECRET: "${ACCOUNT_CREDENTIAL_SECRET:-}"',
+  'CHECKIN_CRON: "${CHECKIN_CRON:-0 8 * * *}"',
+  'BALANCE_REFRESH_CRON: "${BALANCE_REFRESH_CRON:-0 * * * *}"',
+  'PORT: ${PORT:-4000}',
+  'TZ: ${TZ:-Asia/Shanghai}',
+  'NOTIFY_COOLDOWN_SEC: ${NOTIFY_COOLDOWN_SEC:-300}',
+  'ADMIN_IP_ALLOWLIST: "${ADMIN_IP_ALLOWLIST:-}"',
+  'SYSTEM_PROXY_URL: "${SYSTEM_PROXY_URL:-}"',
+  'TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-false}',
+  'TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"',
+  'TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"',
+  'TELEGRAM_API_BASE_URL: "${TELEGRAM_API_BASE_URL:-}"',
+  'TELEGRAM_MESSAGE_THREAD_ID: "${TELEGRAM_MESSAGE_THREAD_ID:-}"',
+  'TELEGRAM_USE_SYSTEM_PROXY: ${TELEGRAM_USE_SYSTEM_PROXY:-false}',
+] as const;
+
 describe('docker workflows', () => {
   it('publishes armv7 docker images in ci and release workflows', () => {
     const ciWorkflow = readFileSync(resolve(process.cwd(), '.github/workflows/ci.yml'), 'utf8');
@@ -39,6 +82,43 @@ describe('docker workflows', () => {
 
     expect(dockerfile).not.toContain('# syntax=docker/dockerfile:');
     expect(dockerfile).not.toContain('RUN --mount=type=cache');
+  });
+
+  it('forwards every documented compose environment variable in all compose examples', () => {
+    const dockerEnvExample = readFileSync(resolve(process.cwd(), 'docker/.env.example'), 'utf8');
+    const documentedVariables = dockerEnvExample
+      .split('\n')
+      .map((line) => line.match(/^([A-Z][A-Z0-9_]*)=/)?.[1])
+      .filter((variable): variable is string => Boolean(variable));
+
+    for (const variable of expectedComposeVariables) {
+      expect(documentedVariables, `${variable} should be documented in docker/.env.example`).toContain(variable);
+    }
+
+    for (const [sourceName, source] of composeSources) {
+      for (const variable of documentedVariables) {
+        const mappingPattern = new RegExp(`^\\s*${variable}:\\s*"?\\$\\{${variable}(?=[:}])`, 'm');
+        expect(source, `${sourceName} should forward ${variable}`).toMatch(mappingPattern);
+      }
+    }
+  });
+
+  it('uses consistent compose defaults, required token guards, and dynamic ports', () => {
+    for (const [sourceName, source] of composeSources) {
+      expect(source, `${sourceName} should require AUTH_TOKEN`).toContain(
+        'AUTH_TOKEN: ${AUTH_TOKEN:?AUTH_TOKEN is required}',
+      );
+      expect(source, `${sourceName} should require PROXY_TOKEN`).toContain(
+        'PROXY_TOKEN: ${PROXY_TOKEN:?PROXY_TOKEN is required}',
+      );
+      expect(source, `${sourceName} should publish and target PORT`).toContain(
+        '"127.0.0.1:${PORT:-4000}:${PORT:-4000}"',
+      );
+
+      for (const mapping of expectedComposeMappings) {
+        expect(source, `${sourceName} should include ${mapping}`).toContain(mapping);
+      }
+    }
   });
 
   it('keeps server docker builds isolated from desktop packaging dependencies', () => {

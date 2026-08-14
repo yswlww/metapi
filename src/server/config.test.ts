@@ -39,6 +39,22 @@ describe('buildConfig', () => {
     expect(config.telegramMessageThreadId).toBe('');
   });
 
+  it('normalizes telegram api base url from environment', () => {
+    const config = buildConfig({
+      TELEGRAM_API_BASE_URL: ' https://tg.example/api/// ',
+    });
+
+    expect(config.telegramApiBaseUrl).toBe('https://tg.example/api');
+  });
+
+  it('uses the official telegram endpoint for a blank override', () => {
+    const config = buildConfig({
+      TELEGRAM_API_BASE_URL: '   ',
+    });
+
+    expect(config.telegramApiBaseUrl).toBe('https://api.telegram.org');
+  });
+
   it('accepts telegram message thread id from environment', () => {
     const config = buildConfig({
       TELEGRAM_MESSAGE_THREAD_ID: '77',
