@@ -1,18 +1,24 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { execFile } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 
 type DbModule = typeof import('../db/index.js');
+type ConfigModule = typeof import('../config.js');
 type SyncServiceModule = typeof import('./patternRouteChannelSyncService.js');
 
 describe('syncPatternRouteChannelsAfterAffectedRouteChanges', () => {
   let db: DbModule['db'];
   let schema: DbModule['schema'];
+  let config: ConfigModule['config'];
   let syncPatternRouteChannelsAfterAffectedRouteChanges: SyncServiceModule['syncPatternRouteChannelsAfterAffectedRouteChanges'];
   let reconcilePatternRouteChannels: SyncServiceModule['reconcilePatternRouteChannels'];
+  let reconcileRouteChannelsByModelPattern: SyncServiceModule['reconcileRouteChannelsByModelPattern'];
   let dataDir = '';
+  let sqlitePath = '';
   let seedId = 0;
 
   const nextId = () => {
@@ -55,11 +61,15 @@ describe('syncPatternRouteChannelsAfterAffectedRouteChanges', () => {
 
     await import('../db/migrate.js');
     const dbModule = await import('../db/index.js');
+    const configModule = await import('../config.js');
     const syncService = await import('./patternRouteChannelSyncService.js');
     db = dbModule.db;
     schema = dbModule.schema;
+    sqlitePath = dbModule.__dbProxyTestUtils.resolveSqlitePath();
+    config = configModule.config;
     syncPatternRouteChannelsAfterAffectedRouteChanges = syncService.syncPatternRouteChannelsAfterAffectedRouteChanges;
     reconcilePatternRouteChannels = syncService.reconcilePatternRouteChannels;
+    reconcileRouteChannelsByModelPattern = syncService.reconcileRouteChannelsByModelPattern;
   });
 
   beforeEach(async () => {
@@ -73,6 +83,8 @@ describe('syncPatternRouteChannelsAfterAffectedRouteChanges', () => {
     await db.delete(schema.accountTokens).run();
     await db.delete(schema.accounts).run();
     await db.delete(schema.sites).run();
+    config.globalAllowedModels = [];
+    config.globalBlockedBrands = [];
     seedId = 0;
   });
 
@@ -192,6 +204,93 @@ describe('syncPatternRouteChannelsAfterAffectedRouteChanges', () => {
     expect(channels.map((channel) => channel.id)).toEqual([manualChannel.id]);
   });
 
+  it('removes automatic pattern channels for site-disabled models during affected-route sync', async () => {
+    const source = await seedAccountWithToken('gpt-5-site-disabled');
+    await db.insert(schema.siteDisabledModels).values({
+      siteId: source.site.id,
+      modelName: 'gpt-5-site-disabled',
+    }).run();
+    const exactRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-site-disabled',
+      enabled: true,
+    }).returning().get();
+    await db.insert(schema.routeChannels).values({
+      routeId: exactRoute.id,
+      accountId: source.account.id,
+      tokenId: source.token.id,
+      sourceModel: 'gpt-5-site-disabled',
+      enabled: true,
+      manualOverride: true,
+    }).run();
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-*',
+      enabled: true,
+    }).returning().get();
+    await db.insert(schema.routeChannels).values({
+      routeId: patternRoute.id,
+      accountId: source.account.id,
+      tokenId: source.token.id,
+      sourceModel: 'gpt-5-site-disabled',
+      enabled: true,
+      manualOverride: false,
+    }).run();
+
+    await syncPatternRouteChannelsAfterAffectedRouteChanges({
+      affectedRouteIds: [exactRoute.id],
+      previousRoutes: [{
+        id: exactRoute.id,
+        modelPattern: exactRoute.modelPattern,
+        routeMode: exactRoute.routeMode,
+        enabled: true,
+      }],
+    });
+
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, patternRoute.id)).all()).toEqual([]);
+  });
+
+  it('does not resurrect models excluded by the global allowlist during affected-route sync', async () => {
+    config.globalAllowedModels = ['claude-allowed'];
+    const source = await seedAccountWithToken('gpt-5-globally-blocked');
+    const exactRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-globally-blocked',
+      enabled: true,
+    }).returning().get();
+    await db.insert(schema.routeChannels).values({
+      routeId: exactRoute.id,
+      accountId: source.account.id,
+      tokenId: source.token.id,
+      sourceModel: 'gpt-5-globally-blocked',
+      enabled: true,
+      manualOverride: true,
+    }).run();
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-*',
+      enabled: true,
+    }).returning().get();
+    await db.insert(schema.routeChannels).values({
+      routeId: patternRoute.id,
+      accountId: source.account.id,
+      tokenId: source.token.id,
+      sourceModel: 'gpt-5-globally-blocked',
+      enabled: true,
+      manualOverride: false,
+    }).run();
+
+    await syncPatternRouteChannelsAfterAffectedRouteChanges({
+      affectedRouteIds: [exactRoute.id],
+      previousRoutes: [{
+        id: exactRoute.id,
+        modelPattern: exactRoute.modelPattern,
+        routeMode: exactRoute.routeMode,
+        enabled: true,
+      }],
+    });
+
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, patternRoute.id)).all()).toEqual([]);
+  });
+
   it('ignores a removed exact route that was already disabled before the mutation', async () => {
     const exactRoute = await db.insert(schema.tokenRoutes).values({
       modelPattern: 'gpt-5-disabled',
@@ -299,6 +398,82 @@ describe('syncPatternRouteChannelsAfterAffectedRouteChanges', () => {
         totalLatencyMs: 345,
         totalCost: 6.25,
       });
+  });
+
+  it('retains a legacy exact automatic channel with a null source model', async () => {
+    const source = await seedAccountWithToken('gpt-5-legacy-exact');
+    const exactRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-legacy-exact',
+      enabled: true,
+    }).returning().get();
+    const legacyChannel = await db.insert(schema.routeChannels).values({
+      routeId: exactRoute.id,
+      accountId: source.account.id,
+      tokenId: source.token.id,
+      sourceModel: null,
+      priority: 5,
+      weight: 3,
+      enabled: false,
+      manualOverride: false,
+      successCount: 19,
+      failCount: 4,
+      totalLatencyMs: 912,
+      totalCost: 8.5,
+    }).returning().get();
+
+    await reconcileRouteChannelsByModelPattern(exactRoute.id, exactRoute.modelPattern);
+
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, exactRoute.id)).all()).toEqual([
+      expect.objectContaining({
+        id: legacyChannel.id,
+        sourceModel: 'gpt-5-legacy-exact',
+        priority: 0,
+        weight: 10,
+        enabled: true,
+        successCount: 19,
+        failCount: 4,
+        totalLatencyMs: 912,
+        totalCost: 8.5,
+      }),
+    ]);
+  });
+
+  it('enforces one automatic identity across independent database clients without the process lock', async () => {
+    const source = await seedAccountWithToken('gpt-5-cross-process');
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-*',
+      enabled: true,
+    }).returning().get();
+    const insertScript = `
+      const Database = require('better-sqlite3');
+      const database = new Database(process.argv[1]);
+      database.pragma('busy_timeout = 5000');
+      database.prepare(\`
+        INSERT INTO route_channels (
+          route_id, account_id, token_id, source_model, enabled, manual_override, automatic_identity
+        ) VALUES (?, ?, ?, ?, 1, 0, ?)
+        ON CONFLICT(route_id, automatic_identity) DO NOTHING
+      \`).run(...process.argv.slice(2));
+      database.close();
+    `;
+    const args = [
+      sqlitePath,
+      String(patternRoute.id),
+      String(source.account.id),
+      String(source.token.id),
+      'gpt-5-cross-process',
+      'automatic:gpt-5-cross-process',
+    ];
+
+    await Promise.all([
+      promisify(execFile)(process.execPath, ['-e', insertScript, ...args]),
+      promisify(execFile)(process.execPath, ['-e', insertScript, ...args]),
+    ]);
+
+    const channels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, patternRoute.id)).all();
+    expect(channels).toHaveLength(1);
   });
 
   it('serializes concurrent reconciliation so one automatic identity is inserted', async () => {

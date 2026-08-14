@@ -190,6 +190,13 @@
       "when": 1786714921458,
       "tag": "0027_site_custom_headers_override_request_headers",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1786734087675,
+      "tag": "0028_route_channel_automatic_identity",
+      "breakpoints": true
     }
   ]
 }

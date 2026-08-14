@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 
 type DbModule = typeof import('../../db/index.js');
 
@@ -188,6 +188,192 @@ describe('PUT /api/routes/:id route rebuild', () => {
       sourceModel: 'claude-opus-4-5',
       manualOverride: false,
     }));
+  });
+
+  it.each([
+    ['wildcard', 'gpt-5-*'],
+    ['regex', 're:^gpt-5-.*$'],
+  ])('preserves a single manually added %s-route channel', async (_label, modelPattern) => {
+    const candidate = await seedAccountWithToken('gpt-5-manual');
+    const route = await db.insert(schema.tokenRoutes).values({
+      modelPattern,
+      enabled: true,
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/routes/${route.id}/channels`,
+      payload: {
+        accountId: candidate.account.id,
+        tokenId: candidate.token.id,
+        sourceModel: 'gpt-5-manual',
+        priority: 6,
+        weight: 4,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const created = response.json() as { id: number };
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.id, created.id)).get()).toMatchObject({
+      id: created.id,
+      routeId: route.id,
+      accountId: candidate.account.id,
+      tokenId: candidate.token.id,
+      sourceModel: 'gpt-5-manual',
+      priority: 6,
+      weight: 4,
+      manualOverride: true,
+    });
+  });
+
+  it('populates an enabled empty exact route from direct OAuth route-unit candidates', async () => {
+    const id = nextId();
+    const site = await db.insert(schema.sites).values({
+      name: `oauth-site-${id}`,
+      url: `https://oauth.example.com/${id}`,
+      platform: 'openai',
+      status: 'active',
+    }).returning().get();
+    const accounts: Array<typeof schema.accounts.$inferSelect> = [];
+    for (const suffix of ['a', 'b']) {
+      const account = await db.insert(schema.accounts).values({
+        siteId: site.id,
+        username: `oauth-${suffix}-${id}`,
+        accessToken: `oauth-access-${suffix}-${id}`,
+        oauthProvider: 'codex',
+        status: 'active',
+      }).returning().get();
+      await db.insert(schema.modelAvailability).values({
+        accountId: account.id,
+        modelName: 'gpt-5-oauth-empty',
+        available: true,
+      }).run();
+      accounts.push(account);
+    }
+    const routeUnit = await db.insert(schema.oauthRouteUnits).values({
+      siteId: site.id,
+      provider: 'codex',
+      name: 'OAuth Empty Route Unit',
+      strategy: 'round_robin',
+      enabled: true,
+    }).returning().get();
+    await db.insert(schema.oauthRouteUnitMembers).values([
+      { unitId: routeUnit.id, accountId: accounts[0]!.id, sortOrder: 0 },
+      { unitId: routeUnit.id, accountId: accounts[1]!.id, sortOrder: 1 },
+    ]).run();
+    const exactRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-oauth-empty',
+      enabled: false,
+    }).returning().get();
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/routes/${exactRoute.id}`,
+      payload: { enabled: true },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, exactRoute.id)).all()).toEqual([
+      expect.objectContaining({
+        accountId: accounts[0]!.id,
+        tokenId: null,
+        oauthRouteUnitId: routeUnit.id,
+        sourceModel: 'gpt-5-oauth-empty',
+        manualOverride: false,
+      }),
+    ]);
+  });
+
+  it('rolls back a channel add when affected-pattern reconciliation fails', async () => {
+    const candidate = await seedAccountWithToken('gpt-5-atomic-add');
+    const exactRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-atomic-add',
+      enabled: true,
+    }).returning().get();
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-*',
+      enabled: true,
+    }).returning().get();
+
+    await db.run(sql.raw(`
+      CREATE TRIGGER fail_atomic_pattern_insert
+      BEFORE INSERT ON route_channels
+      WHEN NEW.route_id = ${patternRoute.id} AND COALESCE(NEW.manual_override, 0) = 0
+      BEGIN
+        SELECT RAISE(ABORT, 'forced reconciliation failure');
+      END
+    `));
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/routes/${exactRoute.id}/channels`,
+        payload: {
+          accountId: candidate.account.id,
+          tokenId: candidate.token.id,
+        },
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(await db.select().from(schema.routeChannels)
+        .where(inArray(schema.routeChannels.routeId, [exactRoute.id, patternRoute.id])).all()).toEqual([]);
+    } finally {
+      await db.run(sql.raw('DROP TRIGGER IF EXISTS fail_atomic_pattern_insert'));
+    }
+  });
+
+  it('rolls back a route delete when stale pattern-channel removal fails', async () => {
+    const candidate = await seedAccountWithToken('gpt-5-atomic-delete');
+    const exactRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-atomic-delete',
+      enabled: true,
+    }).returning().get();
+    const exactChannel = await db.insert(schema.routeChannels).values({
+      routeId: exactRoute.id,
+      accountId: candidate.account.id,
+      tokenId: candidate.token.id,
+      sourceModel: 'gpt-5-atomic-delete',
+      enabled: true,
+      manualOverride: true,
+    }).returning().get();
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-*',
+      enabled: true,
+    }).returning().get();
+    const patternChannel = await db.insert(schema.routeChannels).values({
+      routeId: patternRoute.id,
+      accountId: candidate.account.id,
+      tokenId: candidate.token.id,
+      sourceModel: 'gpt-5-atomic-delete',
+      enabled: true,
+      manualOverride: false,
+    }).returning().get();
+
+    await db.run(sql.raw(`
+      CREATE TRIGGER fail_atomic_pattern_delete
+      BEFORE DELETE ON route_channels
+      WHEN OLD.id = ${patternChannel.id}
+      BEGIN
+        SELECT RAISE(ABORT, 'forced reconciliation failure');
+      END
+    `));
+    try {
+      const response = await app.inject({
+        method: 'DELETE',
+        url: `/api/routes/${exactRoute.id}`,
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(await db.select().from(schema.tokenRoutes)
+        .where(eq(schema.tokenRoutes.id, exactRoute.id)).get()).toMatchObject({ id: exactRoute.id });
+      expect(await db.select().from(schema.routeChannels)
+        .where(eq(schema.routeChannels.id, exactChannel.id)).get()).toMatchObject({ id: exactChannel.id });
+      expect(await db.select().from(schema.routeChannels)
+        .where(eq(schema.routeChannels.id, patternChannel.id)).get()).toMatchObject({ id: patternChannel.id });
+    } finally {
+      await db.run(sql.raw('DROP TRIGGER IF EXISTS fail_atomic_pattern_delete'));
+    }
   });
 
   it('rate limits repeated route overview reads', async () => {

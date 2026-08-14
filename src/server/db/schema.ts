@@ -217,6 +217,7 @@ export const routeChannels = sqliteTable('route_channels', {
   tokenId: integer('token_id').references(() => accountTokens.id, { onDelete: 'set null' }),
   oauthRouteUnitId: integer('oauth_route_unit_id'),
   sourceModel: text('source_model'),
+  automaticIdentity: text('automatic_identity'),
   priority: integer('priority').default(0),
   weight: integer('weight').default(10),
   enabled: integer('enabled', { mode: 'boolean' }).default(true),
@@ -238,6 +239,8 @@ export const routeChannels = sqliteTable('route_channels', {
   oauthRouteUnitIdx: index('route_channels_oauth_route_unit_id_idx').on(table.oauthRouteUnitId),
   routeEnabledIdx: index('route_channels_route_enabled_idx').on(table.routeId, table.enabled),
   routeTokenIdx: index('route_channels_route_token_idx').on(table.routeId, table.tokenId),
+  routeAutomaticIdentityUnique: uniqueIndex('route_channels_route_automatic_identity_unique')
+    .on(table.routeId, table.automaticIdentity),
 }));
 
 export const proxyLogs = sqliteTable('proxy_logs', {

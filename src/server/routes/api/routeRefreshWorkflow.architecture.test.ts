@@ -49,8 +49,8 @@ describe('route refresh workflow architecture boundaries', () => {
 
     expectImportsPatternRouteChannelSync(tokensSource);
     expectImportsPatternRouteChannelSync(modelServiceSource);
-    expect(tokensSource).toMatch(/\bsyncPatternRouteChannelsAfterAffectedRouteChanges\s*\(/);
-    expect(modelServiceSource).toMatch(/\breconcilePatternRouteChannels\s*\(/);
+    expect(tokensSource).toMatch(/\bmutateRouteTopology\s*\(/);
+    expect(modelServiceSource).toMatch(/\bmutateRouteTopology\s*\(/);
     expect(tokensSource).not.toMatch(/async function getPatternTokenCandidates\s*\(/);
     expect(modelServiceSource).not.toMatch(/const desiredSourceModelsByKey\s*=/);
   });

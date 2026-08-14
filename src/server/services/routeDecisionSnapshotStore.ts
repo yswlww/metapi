@@ -17,9 +17,15 @@ export function parseRouteDecisionSnapshot(value: unknown): unknown | null {
   }
 }
 
-export async function saveRouteDecisionSnapshot(routeId: number, snapshot: unknown): Promise<void> {
+type DatabaseExecutor = typeof db;
+
+export async function saveRouteDecisionSnapshot(
+  routeId: number,
+  snapshot: unknown,
+  database: DatabaseExecutor = db,
+): Promise<void> {
   const refreshedAt = formatUtcSqlDateTime(new Date());
-  await db.update(schema.tokenRoutes)
+  await database.update(schema.tokenRoutes)
     .set({
       decisionSnapshot: serializeSnapshot(snapshot),
       decisionRefreshedAt: refreshedAt,
@@ -28,17 +34,26 @@ export async function saveRouteDecisionSnapshot(routeId: number, snapshot: unkno
     .run();
 }
 
-export async function saveRouteDecisionSnapshots(entries: Array<{ routeId: number; snapshot: unknown }>): Promise<void> {
+export async function saveRouteDecisionSnapshots(
+  entries: Array<{ routeId: number; snapshot: unknown }>,
+  database: DatabaseExecutor = db,
+): Promise<void> {
   for (const entry of entries) {
-    await saveRouteDecisionSnapshot(entry.routeId, entry.snapshot);
+    await saveRouteDecisionSnapshot(entry.routeId, entry.snapshot, database);
   }
 }
 
-export async function clearRouteDecisionSnapshot(routeId: number): Promise<void> {
-  await clearRouteDecisionSnapshots([routeId]);
+export async function clearRouteDecisionSnapshot(
+  routeId: number,
+  database: DatabaseExecutor = db,
+): Promise<void> {
+  await clearRouteDecisionSnapshots([routeId], database);
 }
 
-export async function clearRouteDecisionSnapshots(routeIds: number[]): Promise<void> {
+export async function clearRouteDecisionSnapshots(
+  routeIds: number[],
+  database: DatabaseExecutor = db,
+): Promise<void> {
   const normalizedRouteIds = Array.from(new Set(
     routeIds
       .map((routeId) => Math.trunc(routeId))
@@ -46,7 +61,7 @@ export async function clearRouteDecisionSnapshots(routeIds: number[]): Promise<v
   ));
   if (normalizedRouteIds.length === 0) return;
 
-  await db.update(schema.tokenRoutes)
+  await database.update(schema.tokenRoutes)
     .set({
       decisionSnapshot: null,
       decisionRefreshedAt: null,
@@ -55,8 +70,8 @@ export async function clearRouteDecisionSnapshots(routeIds: number[]): Promise<v
     .run();
 }
 
-export async function clearAllRouteDecisionSnapshots(): Promise<void> {
-  await db.update(schema.tokenRoutes)
+export async function clearAllRouteDecisionSnapshots(database: DatabaseExecutor = db): Promise<void> {
+  await database.update(schema.tokenRoutes)
     .set({
       decisionSnapshot: null,
       decisionRefreshedAt: null,

@@ -26,6 +26,10 @@ describe('schema contract generation', () => {
     });
     expect(contract.tables.proxy_video_tasks).toBeDefined();
     expect(contract.tables.route_channels.columns.source_model).toBeDefined();
+    expect(contract.tables.route_channels.columns.automatic_identity).toMatchObject({
+      logicalType: 'text',
+      notNull: false,
+    });
     expect(contract.tables.route_channels.columns.last_selected_at).toBeDefined();
     expect(contract.tables.route_channels.columns.consecutive_fail_count).toMatchObject({
       logicalType: 'integer',
@@ -59,6 +63,13 @@ describe('schema contract generation', () => {
         name: 'model_availability_account_model_unique',
         table: 'model_availability',
         columns: ['account_id', 'model_name'],
+      }),
+    );
+    expect(contract.uniques).toContainEqual(
+      expect.objectContaining({
+        name: 'route_channels_route_automatic_identity_unique',
+        table: 'route_channels',
+        columns: ['route_id', 'automatic_identity'],
       }),
     );
     expect(contract.foreignKeys).toContainEqual(

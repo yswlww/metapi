@@ -1690,6 +1690,7 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
         accountId: row.accountId,
         tokenId: row.tokenId,
         sourceModel: row.sourceModel ?? null,
+        automaticIdentity: row.manualOverride ? null : row.automaticIdentity ?? null,
         priority: row.priority,
         weight: row.weight,
         enabled: row.enabled,

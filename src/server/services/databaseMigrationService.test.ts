@@ -169,7 +169,9 @@ describe('databaseMigrationService', () => {
     });
 
     const useSystemProxySql = executedSql.find((sqlText) => sqlText.includes('use_system_proxy'));
-    const customHeadersSql = executedSql.find((sqlText) => sqlText.includes('custom_headers'));
+    const customHeadersSql = executedSql.find((sqlText) => (
+      sqlText.includes('`custom_headers`') || sqlText.includes('"custom_headers"')
+    ));
     const customHeadersOverrideSql = executedSql.find((sqlText) => sqlText.includes('custom_headers_override_request_headers'));
 
     expect(useSystemProxySql).toContain('use_system_proxy');

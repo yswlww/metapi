@@ -1589,6 +1589,12 @@
           "notNull": false,
           "defaultValue": null,
           "primaryKey": false
+        },
+        "automatic_identity": {
+          "logicalType": "text",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKey": false
         }
       }
     },
@@ -2718,6 +2724,15 @@
       "unique": false
     },
     {
+      "name": "route_channels_route_automatic_identity_unique",
+      "table": "route_channels",
+      "columns": [
+        "route_id",
+        "automatic_identity"
+      ],
+      "unique": true
+    },
+    {
       "name": "route_channels_route_enabled_idx",
       "table": "route_channels",
       "columns": [
@@ -3025,6 +3040,14 @@
       "table": "proxy_video_tasks",
       "columns": [
         "public_id"
+      ]
+    },
+    {
+      "name": "route_channels_route_automatic_identity_unique",
+      "table": "route_channels",
+      "columns": [
+        "route_id",
+        "automatic_identity"
       ]
     },
     {
