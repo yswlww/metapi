@@ -11,6 +11,7 @@ describe('syncPatternRouteChannelsAfterAffectedRouteChanges', () => {
   let db: DbModule['db'];
   let schema: DbModule['schema'];
   let syncPatternRouteChannelsAfterAffectedRouteChanges: SyncServiceModule['syncPatternRouteChannelsAfterAffectedRouteChanges'];
+  let reconcilePatternRouteChannels: SyncServiceModule['reconcilePatternRouteChannels'];
   let dataDir = '';
   let seedId = 0;
 
@@ -58,6 +59,7 @@ describe('syncPatternRouteChannelsAfterAffectedRouteChanges', () => {
     db = dbModule.db;
     schema = dbModule.schema;
     syncPatternRouteChannelsAfterAffectedRouteChanges = syncService.syncPatternRouteChannelsAfterAffectedRouteChanges;
+    reconcilePatternRouteChannels = syncService.reconcilePatternRouteChannels;
   });
 
   beforeEach(async () => {
@@ -296,6 +298,226 @@ describe('syncPatternRouteChannelsAfterAffectedRouteChanges', () => {
         failCount: 2,
         totalLatencyMs: 345,
         totalCost: 6.25,
+      });
+  });
+
+  it('serializes concurrent reconciliation so one automatic identity is inserted', async () => {
+    const source = await seedAccountWithToken('gpt-5-concurrent');
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-*',
+      enabled: true,
+    }).returning().get();
+    const input = {
+      patternRouteIds: [patternRoute.id],
+      desiredCandidates: [{
+        accountId: source.account.id,
+        tokenId: source.token.id,
+        oauthRouteUnitId: null,
+        sourceModel: 'gpt-5-concurrent',
+        matchModel: 'gpt-5-concurrent',
+        priority: 4,
+        weight: 6,
+        enabled: true,
+      }],
+    };
+
+    await Promise.all([
+      reconcilePatternRouteChannels(input),
+      reconcilePatternRouteChannels(input),
+    ]);
+
+    const channels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, patternRoute.id)).all();
+    expect(channels).toHaveLength(1);
+    expect(channels[0]).toMatchObject({
+      accountId: source.account.id,
+      tokenId: source.token.id,
+      sourceModel: 'gpt-5-concurrent',
+    });
+  });
+
+  it('rolls back stale deletions when a replacement insert fails', async () => {
+    const source = await seedAccountWithToken('gpt-5-stale');
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-*',
+      enabled: true,
+    }).returning().get();
+    const staleChannel = await db.insert(schema.routeChannels).values({
+      routeId: patternRoute.id,
+      accountId: source.account.id,
+      tokenId: source.token.id,
+      sourceModel: 'gpt-5-stale',
+      priority: 8,
+      weight: 2,
+      enabled: false,
+      manualOverride: false,
+      successCount: 5,
+    }).returning().get();
+
+    await expect(reconcilePatternRouteChannels({
+      patternRouteIds: [patternRoute.id],
+      desiredCandidates: [{
+        accountId: 999_999,
+        tokenId: null,
+        oauthRouteUnitId: null,
+        sourceModel: 'gpt-5-replacement',
+        matchModel: 'gpt-5-replacement',
+        priority: 0,
+        weight: 10,
+        enabled: true,
+      }],
+    })).rejects.toThrow();
+
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.id, staleChannel.id)).get()).toMatchObject({
+        id: staleChannel.id,
+        priority: 8,
+        weight: 2,
+        enabled: false,
+        successCount: 5,
+      });
+  });
+
+  it('lets a same-identity manual account channel supersede its automatic duplicate unchanged', async () => {
+    const source = await seedAccountWithToken('gpt-5-manual-account');
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-*',
+      enabled: true,
+    }).returning().get();
+    const manualChannel = await db.insert(schema.routeChannels).values({
+      routeId: patternRoute.id,
+      accountId: source.account.id,
+      tokenId: source.token.id,
+      sourceModel: 'gpt-5-manual-account',
+      priority: 9,
+      weight: 1,
+      enabled: false,
+      manualOverride: true,
+      successCount: 17,
+      failCount: 4,
+      totalLatencyMs: 876,
+      totalCost: 3.25,
+    }).returning().get();
+    const automaticChannel = await db.insert(schema.routeChannels).values({
+      routeId: patternRoute.id,
+      accountId: source.account.id,
+      tokenId: source.token.id,
+      sourceModel: 'GPT-5-MANUAL-ACCOUNT',
+      priority: 0,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+    }).returning().get();
+
+    await reconcilePatternRouteChannels({
+      patternRouteIds: [patternRoute.id],
+      desiredCandidates: [{
+        accountId: source.account.id,
+        tokenId: source.token.id,
+        oauthRouteUnitId: null,
+        sourceModel: 'gpt-5-manual-account',
+        matchModel: 'gpt-5-manual-account',
+        priority: 3,
+        weight: 7,
+        enabled: true,
+      }],
+    });
+
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.id, automaticChannel.id)).get()).toBeUndefined();
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.id, manualChannel.id)).get()).toMatchObject({
+        id: manualChannel.id,
+        accountId: source.account.id,
+        tokenId: source.token.id,
+        sourceModel: 'gpt-5-manual-account',
+        priority: 9,
+        weight: 1,
+        enabled: false,
+        manualOverride: true,
+        successCount: 17,
+        failCount: 4,
+        totalLatencyMs: 876,
+        totalCost: 3.25,
+      });
+  });
+
+  it('lets a same-identity manual OAuth route-unit channel supersede its automatic duplicate unchanged', async () => {
+    const sourceA = await seedAccountWithToken('gpt-5-manual-oauth');
+    const sourceB = await seedAccountWithToken('gpt-5-manual-oauth');
+    const routeUnit = await db.insert(schema.oauthRouteUnits).values({
+      siteId: sourceA.site.id,
+      provider: 'codex',
+      name: 'Manual OAuth Unit',
+      strategy: 'round_robin',
+      enabled: true,
+    }).returning().get();
+    await db.insert(schema.oauthRouteUnitMembers).values([
+      { unitId: routeUnit.id, accountId: sourceA.account.id, sortOrder: 0 },
+      { unitId: routeUnit.id, accountId: sourceB.account.id, sortOrder: 1 },
+    ]).run();
+    const patternRoute = await db.insert(schema.tokenRoutes).values({
+      modelPattern: 'gpt-5-*',
+      enabled: true,
+    }).returning().get();
+    const manualChannel = await db.insert(schema.routeChannels).values({
+      routeId: patternRoute.id,
+      accountId: sourceA.account.id,
+      tokenId: null,
+      oauthRouteUnitId: routeUnit.id,
+      sourceModel: 'gpt-5-manual-oauth',
+      priority: 8,
+      weight: 2,
+      enabled: false,
+      manualOverride: true,
+      successCount: 21,
+      failCount: 6,
+      totalLatencyMs: 654,
+      totalCost: 9.75,
+    }).returning().get();
+    const automaticChannel = await db.insert(schema.routeChannels).values({
+      routeId: patternRoute.id,
+      accountId: sourceB.account.id,
+      tokenId: null,
+      oauthRouteUnitId: routeUnit.id,
+      sourceModel: 'GPT-5-MANUAL-OAUTH',
+      priority: 0,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+    }).returning().get();
+
+    await reconcilePatternRouteChannels({
+      patternRouteIds: [patternRoute.id],
+      desiredCandidates: [{
+        accountId: sourceB.account.id,
+        tokenId: null,
+        oauthRouteUnitId: routeUnit.id,
+        sourceModel: 'gpt-5-manual-oauth',
+        matchModel: 'gpt-5-manual-oauth',
+        priority: 4,
+        weight: 6,
+        enabled: true,
+      }],
+    });
+
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.id, automaticChannel.id)).get()).toBeUndefined();
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.id, manualChannel.id)).get()).toMatchObject({
+        id: manualChannel.id,
+        accountId: sourceA.account.id,
+        tokenId: null,
+        oauthRouteUnitId: routeUnit.id,
+        sourceModel: 'gpt-5-manual-oauth',
+        priority: 8,
+        weight: 2,
+        enabled: false,
+        manualOverride: true,
+        successCount: 21,
+        failCount: 6,
+        totalLatencyMs: 654,
+        totalCost: 9.75,
       });
   });
 });

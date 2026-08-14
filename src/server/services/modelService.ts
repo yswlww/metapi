@@ -1558,9 +1558,6 @@ export async function rebuildTokenRoutesFromAvailability() {
         ...candidate,
         sourceModel: modelName,
         matchModel: modelName,
-        priority: 0,
-        weight: 10,
-        enabled: true,
       });
     }
   }

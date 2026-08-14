@@ -1119,7 +1119,10 @@ export async function tokensRoutes(app: FastifyInstance) {
       || body.modelMapping !== undefined
       || body.routingStrategy !== undefined
       || body.enabled !== undefined;
-    if (routeMode === 'pattern' && modelPatternChanged && isExactModelPattern(nextModelPattern)) {
+    const shouldPopulateExactRoute = routeMode === 'pattern'
+      && isExactModelPattern(nextModelPattern)
+      && (modelPatternChanged || (body.enabled === true && !existingRoute.enabled));
+    if (shouldPopulateExactRoute) {
       await reconcileRouteChannelsByModelPattern(id, nextModelPattern);
     }
     if (routeMode === 'pattern' && (modelPatternChanged || body.enabled !== undefined)) {
@@ -1193,6 +1196,13 @@ export async function tokensRoutes(app: FastifyInstance) {
       .set({ enabled, updatedAt: now })
       .where(inArray(schema.tokenRoutes.id, ids))
       .run();
+
+    if (enabled) {
+      for (const route of previousRoutes) {
+        if (route.enabled || isExplicitGroupRoute(route) || !isExactModelPattern(route.modelPattern)) continue;
+        await reconcileRouteChannelsByModelPattern(route.id, route.modelPattern);
+      }
+    }
 
     await clearRouteDecisionSnapshots(ids);
     await clearDependentExplicitGroupSnapshotsBySourceRouteIds(ids);

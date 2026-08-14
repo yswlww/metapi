@@ -329,7 +329,12 @@ describe('rebuildTokenRoutesFromAvailability', () => {
       .all();
 
     expect(wildcardChannels.some((channel) => channel.accountId === firstAccount.id)).toBe(true);
-    expect(wildcardChannels.some((channel) => channel.accountId === secondAccount.id)).toBe(true);
+    expect(wildcardChannels.find((channel) => channel.accountId === secondAccount.id)).toMatchObject({
+      priority: 0,
+      weight: 10,
+      enabled: true,
+      manualOverride: false,
+    });
   });
 
   it('prunes stale automatic wildcard channels and matches sourceModel case-insensitively', async () => {
@@ -371,9 +376,9 @@ describe('rebuildTokenRoutesFromAvailability', () => {
       accountId: account.id,
       tokenId: token.id,
       sourceModel: 'Claude-Opus-4-5',
-      priority: 0,
-      weight: 10,
-      enabled: true,
+      priority: 8,
+      weight: 2,
+      enabled: false,
       manualOverride: false,
       successCount: 13,
       failCount: 2,
@@ -419,6 +424,9 @@ describe('rebuildTokenRoutesFromAvailability', () => {
     expect(wildcardChannels.find((channel) => channel.id === retainedChannel.id)).toMatchObject({
       id: retainedChannel.id,
       sourceModel: 'Claude-Opus-4-5',
+      priority: 8,
+      weight: 2,
+      enabled: false,
       successCount: 13,
       failCount: 2,
       totalLatencyMs: 789,

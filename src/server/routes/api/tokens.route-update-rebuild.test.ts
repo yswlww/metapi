@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 
 type DbModule = typeof import('../../db/index.js');
 
@@ -730,6 +730,102 @@ describe('PUT /api/routes/:id route rebuild', () => {
 
     const updated = await db.select().from(schema.routeChannels).where(eq(schema.routeChannels.id, channel.id)).get();
     expect(updated?.tokenId).toBe(seeded.token.id);
+  });
+
+  it('populates a disabled exact route and matching pattern route when singly enabled', async () => {
+    const source = await seedAccountWithToken('gpt-5-disabled-single');
+    const exactResponse = await app.inject({
+      method: 'POST',
+      url: '/api/routes',
+      payload: {
+        modelPattern: 'gpt-5-disabled-single',
+        enabled: false,
+      },
+    });
+    expect(exactResponse.statusCode).toBe(200);
+    const exactRouteId = exactResponse.json().id as number;
+    const patternResponse = await app.inject({
+      method: 'POST',
+      url: '/api/routes',
+      payload: {
+        modelPattern: 'gpt-5-disabled-*',
+        enabled: true,
+      },
+    });
+    expect(patternResponse.statusCode).toBe(200);
+    const patternRouteId = patternResponse.json().id as number;
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, exactRouteId)).all()).toHaveLength(0);
+
+    const enableResponse = await app.inject({
+      method: 'PUT',
+      url: `/api/routes/${exactRouteId}`,
+      payload: { enabled: true },
+    });
+
+    expect(enableResponse.statusCode).toBe(200);
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, exactRouteId)).all()).toContainEqual(expect.objectContaining({
+        accountId: source.account.id,
+        tokenId: source.token.id,
+        sourceModel: 'gpt-5-disabled-single',
+      }));
+    expect(await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, patternRouteId)).all()).toContainEqual(expect.objectContaining({
+        accountId: source.account.id,
+        tokenId: source.token.id,
+        sourceModel: 'gpt-5-disabled-single',
+      }));
+  });
+
+  it('populates disabled exact routes and matching pattern routes when batch enabled', async () => {
+    const sourceA = await seedAccountWithToken('gpt-5-disabled-batch-a');
+    const sourceB = await seedAccountWithToken('gpt-5-disabled-batch-b');
+    const exactRouteIds: number[] = [];
+    for (const modelPattern of ['gpt-5-disabled-batch-a', 'gpt-5-disabled-batch-b']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/routes',
+        payload: { modelPattern, enabled: false },
+      });
+      expect(response.statusCode).toBe(200);
+      exactRouteIds.push(response.json().id as number);
+    }
+    const patternResponse = await app.inject({
+      method: 'POST',
+      url: '/api/routes',
+      payload: {
+        modelPattern: 'gpt-5-disabled-batch-*',
+        enabled: true,
+      },
+    });
+    expect(patternResponse.statusCode).toBe(200);
+    const patternRouteId = patternResponse.json().id as number;
+
+    const enableResponse = await app.inject({
+      method: 'POST',
+      url: '/api/routes/batch',
+      payload: { ids: exactRouteIds, action: 'enable' },
+    });
+
+    expect(enableResponse.statusCode).toBe(200);
+    const exactChannels = await db.select().from(schema.routeChannels)
+      .where(inArray(schema.routeChannels.routeId, exactRouteIds)).all();
+    expect(exactChannels).toHaveLength(2);
+    const patternChannels = await db.select().from(schema.routeChannels)
+      .where(eq(schema.routeChannels.routeId, patternRouteId)).all();
+    expect(patternChannels).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        accountId: sourceA.account.id,
+        tokenId: sourceA.token.id,
+        sourceModel: 'gpt-5-disabled-batch-a',
+      }),
+      expect.objectContaining({
+        accountId: sourceB.account.id,
+        tokenId: sourceB.token.id,
+        sourceModel: 'gpt-5-disabled-batch-b',
+      }),
+    ]));
   });
 
   it('updates derived OAuth pattern channels in place after exact channel changes', async () => {

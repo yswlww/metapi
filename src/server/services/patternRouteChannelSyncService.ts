@@ -20,9 +20,9 @@ export type PatternRouteChannelCandidate = {
   tokenId: number | null;
   oauthRouteUnitId: number | null;
   sourceModel: string;
-  priority: number;
-  weight: number;
-  enabled: boolean;
+  priority?: number;
+  weight?: number;
+  enabled?: boolean;
   matchModel?: string;
 };
 
@@ -47,7 +47,27 @@ type RouteIdentity = Pick<
   'id' | 'modelPattern' | 'routeMode' | 'enabled'
 >;
 
+type DatabaseExecutor = typeof db;
 type ExistingChannel = typeof schema.routeChannels.$inferSelect;
+type InternalPatternRouteChannelSyncResult = PatternRouteChannelSyncResult & {
+  changedRouteIds: number[];
+};
+
+let reconciliationTail: Promise<void> = Promise.resolve();
+
+async function withReconciliationLock<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = reconciliationTail;
+  let release: () => void = () => {};
+  reconciliationTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
 
 function isExactModelPattern(modelPattern: string): boolean {
   const normalized = modelPattern.trim();
@@ -133,10 +153,11 @@ function dedupeCandidates(candidates: PatternRouteChannelCandidate[]): PatternRo
 }
 
 async function reconcileRouteChannels(
+  database: DatabaseExecutor,
   route: RouteIdentity,
   desiredCandidates: PatternRouteChannelCandidate[],
 ): Promise<{ createdChannels: number; removedChannels: number; changed: boolean }> {
-  const existingChannels = (await db.select().from(schema.routeChannels)
+  const existingChannels = (await database.select().from(schema.routeChannels)
     .where(eq(schema.routeChannels.routeId, route.id))
     .all())
     .sort((left, right) => left.id - right.id);
@@ -164,7 +185,7 @@ async function reconcileRouteChannels(
   }
 
   if (removableChannelIds.length > 0) {
-    await db.delete(schema.routeChannels)
+    await database.delete(schema.routeChannels)
       .where(inArray(schema.routeChannels.id, removableChannelIds))
       .run();
   }
@@ -173,17 +194,27 @@ async function reconcileRouteChannels(
   let changed = removableChannelIds.length > 0;
   for (const [identity, candidate] of desiredByIdentity.entries()) {
     if (manualIdentities.has(identity)) continue;
-    const existing = retainedAutomaticChannels.get(identity);
+    let existing = retainedAutomaticChannels.get(identity);
     if (!existing) {
-      await db.insert(schema.routeChannels).values({
+      const currentChannels = (await database.select().from(schema.routeChannels)
+        .where(eq(schema.routeChannels.routeId, route.id))
+        .all())
+        .sort((left, right) => left.id - right.id);
+      if (currentChannels.some((channel) => channel.manualOverride && channelIdentity(channel) === identity)) {
+        continue;
+      }
+      existing = currentChannels.find((channel) => !channel.manualOverride && channelIdentity(channel) === identity);
+    }
+    if (!existing) {
+      await database.insert(schema.routeChannels).values({
         routeId: route.id,
         accountId: candidate.accountId,
         tokenId: candidate.tokenId,
         oauthRouteUnitId: candidate.oauthRouteUnitId,
         sourceModel: candidate.sourceModel,
-        priority: candidate.priority,
-        weight: candidate.weight,
-        enabled: candidate.enabled,
+        priority: candidate.priority ?? 0,
+        weight: candidate.weight ?? 10,
+        enabled: candidate.enabled ?? true,
         manualOverride: false,
       }).run();
       createdChannels += 1;
@@ -197,12 +228,18 @@ async function reconcileRouteChannels(
     if ((existing.oauthRouteUnitId ?? null) !== candidate.oauthRouteUnitId) {
       updates.oauthRouteUnitId = candidate.oauthRouteUnitId;
     }
-    if ((existing.priority ?? 0) !== candidate.priority) updates.priority = candidate.priority;
-    if ((existing.weight ?? 10) !== candidate.weight) updates.weight = candidate.weight;
-    if (!!existing.enabled !== candidate.enabled) updates.enabled = candidate.enabled;
+    if (candidate.priority !== undefined && (existing.priority ?? 0) !== candidate.priority) {
+      updates.priority = candidate.priority;
+    }
+    if (candidate.weight !== undefined && (existing.weight ?? 10) !== candidate.weight) {
+      updates.weight = candidate.weight;
+    }
+    if (candidate.enabled !== undefined && !!existing.enabled !== candidate.enabled) {
+      updates.enabled = candidate.enabled;
+    }
 
     if (Object.keys(updates).length > 0) {
-      await db.update(schema.routeChannels)
+      await database.update(schema.routeChannels)
         .set(updates)
         .where(eq(schema.routeChannels.id, existing.id))
         .run();
@@ -217,12 +254,15 @@ async function reconcileRouteChannels(
   };
 }
 
-async function listEnabledPatternRoutes(routeIds?: number[]): Promise<RouteIdentity[]> {
+async function listEnabledPatternRoutes(
+  database: DatabaseExecutor,
+  routeIds?: number[],
+): Promise<RouteIdentity[]> {
   const normalizedRouteIds = normalizeRouteIds(routeIds);
   if (routeIds && normalizedRouteIds.length === 0) return [];
 
   const rows = normalizedRouteIds.length > 0
-    ? await db.select({
+    ? await database.select({
       id: schema.tokenRoutes.id,
       modelPattern: schema.tokenRoutes.modelPattern,
       routeMode: schema.tokenRoutes.routeMode,
@@ -230,7 +270,7 @@ async function listEnabledPatternRoutes(routeIds?: number[]): Promise<RouteIdent
     }).from(schema.tokenRoutes)
       .where(inArray(schema.tokenRoutes.id, normalizedRouteIds))
       .all()
-    : await db.select({
+    : await database.select({
       id: schema.tokenRoutes.id,
       modelPattern: schema.tokenRoutes.modelPattern,
       routeMode: schema.tokenRoutes.routeMode,
@@ -240,16 +280,20 @@ async function listEnabledPatternRoutes(routeIds?: number[]): Promise<RouteIdent
   return rows.filter((route): route is RouteIdentity => !!route.enabled && isPatternRoute(route));
 }
 
-export async function reconcilePatternRouteChannels(
+async function reconcilePatternRouteChannelsInTransaction(
+  database: DatabaseExecutor,
   input: ReconcilePatternRouteChannelsInput,
-): Promise<PatternRouteChannelSyncResult> {
-  const patternRoutes = await listEnabledPatternRoutes(input.patternRouteIds);
-  if (patternRoutes.length === 0) return emptySyncResult();
+): Promise<InternalPatternRouteChannelSyncResult> {
+  const patternRoutes = await listEnabledPatternRoutes(database, input.patternRouteIds);
+  if (patternRoutes.length === 0) {
+    return { ...emptySyncResult(), changedRouteIds: [] };
+  }
 
   const result = emptySyncResult();
   const changedRouteIds: number[] = [];
   for (const route of patternRoutes) {
     const routeResult = await reconcileRouteChannels(
+      database,
       route,
       input.desiredCandidates.filter((candidate) => candidateMatchesRoute(candidate, route)),
     );
@@ -259,16 +303,42 @@ export async function reconcilePatternRouteChannels(
     if (routeResult.changed) changedRouteIds.push(route.id);
   }
 
-  if (changedRouteIds.length > 0) {
-    await clearRouteDecisionSnapshots(changedRouteIds);
-  }
-  return result;
+  return { ...result, changedRouteIds };
+}
+
+function publicSyncResult(result: InternalPatternRouteChannelSyncResult): PatternRouteChannelSyncResult {
+  return {
+    rebuiltRoutes: result.rebuiltRoutes,
+    createdChannels: result.createdChannels,
+    removedChannels: result.removedChannels,
+  };
+}
+
+async function runReconciliationTransaction(
+  operation: (transaction: DatabaseExecutor) => Promise<InternalPatternRouteChannelSyncResult>,
+): Promise<PatternRouteChannelSyncResult> {
+  return withReconciliationLock(async () => {
+    const result = await db.transaction(operation);
+    if (result.changedRouteIds.length > 0) {
+      await clearRouteDecisionSnapshots(result.changedRouteIds);
+    }
+    return publicSyncResult(result);
+  });
+}
+
+export async function reconcilePatternRouteChannels(
+  input: ReconcilePatternRouteChannelsInput,
+): Promise<PatternRouteChannelSyncResult> {
+  return runReconciliationTransaction(async (transaction) => (
+    reconcilePatternRouteChannelsInTransaction(transaction, input)
+  ));
 }
 
 async function loadAvailabilityCandidates(
+  database: DatabaseExecutor,
   excludedExactModelPatterns: Set<string>,
 ): Promise<PatternRouteChannelCandidate[]> {
-  const rows = await db.select().from(schema.tokenModelAvailability)
+  const rows = await database.select().from(schema.tokenModelAvailability)
     .innerJoin(schema.accountTokens, eq(schema.tokenModelAvailability.tokenId, schema.accountTokens.id))
     .innerJoin(schema.accounts, eq(schema.accountTokens.accountId, schema.accounts.id))
     .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
@@ -301,9 +371,10 @@ async function loadAvailabilityCandidates(
 }
 
 async function loadExactTopologyCandidates(
+  database: DatabaseExecutor,
   previousExactModelPatterns: string[] = [],
 ): Promise<PatternRouteChannelCandidate[]> {
-  const exactRoutes = (await db.select({
+  const exactRoutes = (await database.select({
     id: schema.tokenRoutes.id,
     modelPattern: schema.tokenRoutes.modelPattern,
     routeMode: schema.tokenRoutes.routeMode,
@@ -318,7 +389,7 @@ async function loadExactTopologyCandidates(
 
   const enabledExactRoutes = exactRoutes.filter((route) => route.enabled);
   const channels = enabledExactRoutes.length > 0
-    ? (await db.select().from(schema.routeChannels)
+    ? (await database.select().from(schema.routeChannels)
       .where(inArray(schema.routeChannels.routeId, enabledExactRoutes.map((route) => route.id)))
       .all())
       .sort((left, right) => left.id - right.id)
@@ -345,7 +416,7 @@ async function loadExactTopologyCandidates(
     });
   }
 
-  const availabilityCandidates = await loadAvailabilityCandidates(excludedExactModelPatterns);
+  const availabilityCandidates = await loadAvailabilityCandidates(database, excludedExactModelPatterns);
   return [...exactCandidates, ...availabilityCandidates];
 }
 
@@ -353,32 +424,32 @@ export async function reconcileRouteChannelsByModelPattern(
   routeId: number,
   modelPattern: string,
 ): Promise<PatternRouteChannelSyncResult> {
-  const route = await db.select({
-    id: schema.tokenRoutes.id,
-    modelPattern: schema.tokenRoutes.modelPattern,
-    routeMode: schema.tokenRoutes.routeMode,
-    enabled: schema.tokenRoutes.enabled,
-  }).from(schema.tokenRoutes)
-    .where(eq(schema.tokenRoutes.id, routeId))
-    .get();
-  if (!route || !route.enabled || normalizeTokenRouteMode(route.routeMode) === 'explicit_group') {
-    return emptySyncResult();
-  }
+  return runReconciliationTransaction(async (transaction) => {
+    const route = await transaction.select({
+      id: schema.tokenRoutes.id,
+      modelPattern: schema.tokenRoutes.modelPattern,
+      routeMode: schema.tokenRoutes.routeMode,
+      enabled: schema.tokenRoutes.enabled,
+    }).from(schema.tokenRoutes)
+      .where(eq(schema.tokenRoutes.id, routeId))
+      .get();
+    if (!route || !route.enabled || normalizeTokenRouteMode(route.routeMode) === 'explicit_group') {
+      return { ...emptySyncResult(), changedRouteIds: [] };
+    }
 
-  const candidates = isExactModelPattern(modelPattern)
-    ? (await loadAvailabilityCandidates(new Set()))
-      .filter((candidate) => matchesModelPattern(candidate.matchModel || candidate.sourceModel, modelPattern))
-    : (await loadExactTopologyCandidates())
-      .filter((candidate) => matchesModelPattern(candidate.matchModel || candidate.sourceModel, modelPattern));
-  const routeResult = await reconcileRouteChannels(route, candidates);
-  if (routeResult.changed) {
-    await clearRouteDecisionSnapshots([route.id]);
-  }
-  return {
-    rebuiltRoutes: 1,
-    createdChannels: routeResult.createdChannels,
-    removedChannels: routeResult.removedChannels,
-  };
+    const candidates = isExactModelPattern(modelPattern)
+      ? (await loadAvailabilityCandidates(transaction, new Set()))
+        .filter((candidate) => matchesModelPattern(candidate.matchModel || candidate.sourceModel, modelPattern))
+      : (await loadExactTopologyCandidates(transaction))
+        .filter((candidate) => matchesModelPattern(candidate.matchModel || candidate.sourceModel, modelPattern));
+    const routeResult = await reconcileRouteChannels(transaction, route, candidates);
+    return {
+      rebuiltRoutes: 1,
+      createdChannels: routeResult.createdChannels,
+      removedChannels: routeResult.removedChannels,
+      changedRouteIds: routeResult.changed ? [route.id] : [],
+    };
+  });
 }
 
 export async function syncPatternRouteChannelsAfterAffectedRouteChanges(
@@ -388,45 +459,49 @@ export async function syncPatternRouteChannelsAfterAffectedRouteChanges(
   const previousRoutes = input.previousRoutes || [];
   if (affectedRouteIds.length === 0 && previousRoutes.length === 0) return emptySyncResult();
 
-  const currentRoutes = affectedRouteIds.length > 0
-    ? await db.select({
-      id: schema.tokenRoutes.id,
-      modelPattern: schema.tokenRoutes.modelPattern,
-      routeMode: schema.tokenRoutes.routeMode,
-      enabled: schema.tokenRoutes.enabled,
-    }).from(schema.tokenRoutes)
-      .where(inArray(schema.tokenRoutes.id, affectedRouteIds))
-      .all()
-    : [];
-  const affectedExactModelPatterns: string[] = [];
-  const previousExactModelPatterns: string[] = [];
-  const directlyAffectedPatternRouteIds = new Set<number>();
+  return runReconciliationTransaction(async (transaction) => {
+    const currentRoutes = affectedRouteIds.length > 0
+      ? await transaction.select({
+        id: schema.tokenRoutes.id,
+        modelPattern: schema.tokenRoutes.modelPattern,
+        routeMode: schema.tokenRoutes.routeMode,
+        enabled: schema.tokenRoutes.enabled,
+      }).from(schema.tokenRoutes)
+        .where(inArray(schema.tokenRoutes.id, affectedRouteIds))
+        .all()
+      : [];
+    const affectedExactModelPatterns: string[] = [];
+    const previousExactModelPatterns: string[] = [];
+    const directlyAffectedPatternRouteIds = new Set<number>();
 
-  for (const route of previousRoutes) {
-    if (route.enabled && isExactSourceRoute(route)) {
-      affectedExactModelPatterns.push(route.modelPattern);
-      previousExactModelPatterns.push(route.modelPattern);
+    for (const route of previousRoutes) {
+      if (route.enabled && isExactSourceRoute(route)) {
+        affectedExactModelPatterns.push(route.modelPattern);
+        previousExactModelPatterns.push(route.modelPattern);
+      }
     }
-  }
-  for (const route of currentRoutes) {
-    if (route.enabled && isExactSourceRoute(route)) {
-      affectedExactModelPatterns.push(route.modelPattern);
-    } else if (route.enabled && isPatternRoute(route)) {
-      directlyAffectedPatternRouteIds.add(route.id);
+    for (const route of currentRoutes) {
+      if (route.enabled && isExactSourceRoute(route)) {
+        affectedExactModelPatterns.push(route.modelPattern);
+      } else if (route.enabled && isPatternRoute(route)) {
+        directlyAffectedPatternRouteIds.add(route.id);
+      }
     }
-  }
 
-  const allPatternRoutes = await listEnabledPatternRoutes();
-  const targetPatternRouteIds = new Set(directlyAffectedPatternRouteIds);
-  for (const route of allPatternRoutes) {
-    if (affectedExactModelPatterns.some((modelPattern) => matchesModelPattern(modelPattern, route.modelPattern))) {
-      targetPatternRouteIds.add(route.id);
+    const allPatternRoutes = await listEnabledPatternRoutes(transaction);
+    const targetPatternRouteIds = new Set(directlyAffectedPatternRouteIds);
+    for (const route of allPatternRoutes) {
+      if (affectedExactModelPatterns.some((modelPattern) => matchesModelPattern(modelPattern, route.modelPattern))) {
+        targetPatternRouteIds.add(route.id);
+      }
     }
-  }
-  if (targetPatternRouteIds.size === 0) return emptySyncResult();
+    if (targetPatternRouteIds.size === 0) {
+      return { ...emptySyncResult(), changedRouteIds: [] };
+    }
 
-  return reconcilePatternRouteChannels({
-    desiredCandidates: await loadExactTopologyCandidates(previousExactModelPatterns),
-    patternRouteIds: Array.from(targetPatternRouteIds),
+    return reconcilePatternRouteChannelsInTransaction(transaction, {
+      desiredCandidates: await loadExactTopologyCandidates(transaction, previousExactModelPatterns),
+      patternRouteIds: Array.from(targetPatternRouteIds),
+    });
   });
 }
