@@ -109,7 +109,9 @@ function normalizeCanonicalSiteUrl(value: string): string {
 
 function normalizeSitePlatform(value: string | undefined): string | null {
   if (value === undefined) return null;
-  return normalizePlatformAlias(value) || null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+  return normalizePlatformAlias(normalized) === 'cliproxyapi' ? 'cliproxyapi' : normalized;
 }
 
 type SiteApiEndpointInputRow = {

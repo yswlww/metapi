@@ -1593,6 +1593,7 @@ function resolveEffectiveUnitCost(candidate: RouteChannelCandidate, modelName: s
   const catalogCost = getCachedModelRoutingReferenceCost({
     siteId: candidate.site.id,
     accountId: candidate.account.id,
+    sitePlatform: candidate.site.platform,
     modelName,
   });
   if (typeof catalogCost === 'number' && Number.isFinite(catalogCost) && catalogCost > 0) {

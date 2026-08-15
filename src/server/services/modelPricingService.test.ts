@@ -19,6 +19,7 @@ import {
   estimateProxyCost,
   fallbackTokenCost,
   fetchModelPricingCatalog,
+  getCachedModelRoutingReferenceCost,
   refreshModelPricingCatalog,
   type EstimateProxyCostInput,
   type PricingModel,
@@ -45,6 +46,19 @@ function buildPricingInput(platform: string, id: number): EstimateProxyCostInput
     modelName: 'gpt-4o-mini',
     totalTokens: 1500,
   };
+}
+
+function mockCommonPricingResponse(): void {
+  fetchMock.mockResolvedValue({
+    ok: true,
+    text: async () => JSON.stringify([{
+      model_name: 'gpt-4o-mini',
+      quota_type: 0,
+      model_ratio: 10,
+      completion_ratio: 1,
+      enable_groups: ['default'],
+    }]),
+  });
 }
 
 describe('modelPricingService', () => {
@@ -254,19 +268,105 @@ describe('modelPricingService', () => {
       expect(catalog).toBeNull();
       expect(fetchMock).not.toHaveBeenCalled();
     });
+
+    it('does not reuse warm pricing or routing-reference caches while estimating cost', async () => {
+      const cacheId = 50_000 + id;
+      mockCommonPricingResponse();
+      const warmCatalog = await fetchModelPricingCatalog(buildPricingInput('new-api', cacheId));
+      expect(warmCatalog?.models).toHaveLength(1);
+      expect(getCachedModelRoutingReferenceCost({
+        siteId: cacheId,
+        accountId: cacheId,
+        sitePlatform: 'new-api',
+        modelName: 'gpt-4o-mini',
+      })).not.toBeNull();
+      fetchMock.mockClear();
+
+      const cost = await estimateProxyCost(buildPricingInput(platform, cacheId));
+
+      expect(cost).toBe(0.003);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getCachedModelRoutingReferenceCost({
+        siteId: cacheId,
+        accountId: cacheId,
+        sitePlatform: platform,
+        modelName: 'gpt-4o-mini',
+      })).toBeNull();
+    });
+
+    it('does not reuse a warm cached catalog or routing-reference cache', async () => {
+      const cacheId = 60_000 + id;
+      mockCommonPricingResponse();
+      const warmCatalog = await fetchModelPricingCatalog(buildPricingInput('new-api', cacheId));
+      expect(warmCatalog?.models).toHaveLength(1);
+      expect(getCachedModelRoutingReferenceCost({
+        siteId: cacheId,
+        accountId: cacheId,
+        sitePlatform: 'new-api',
+        modelName: 'gpt-4o-mini',
+      })).not.toBeNull();
+      fetchMock.mockClear();
+
+      const catalog = await fetchModelPricingCatalog(buildPricingInput(platform, cacheId));
+
+      expect(catalog).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getCachedModelRoutingReferenceCost({
+        siteId: cacheId,
+        accountId: cacheId,
+        sitePlatform: platform,
+        modelName: 'gpt-4o-mini',
+      })).toBeNull();
+    });
+
+    it('invalidates warm pricing and routing-reference caches during forced refresh', async () => {
+      const cacheId = 70_000 + id;
+      mockCommonPricingResponse();
+      const warmCatalog = await fetchModelPricingCatalog(buildPricingInput('new-api', cacheId));
+      expect(warmCatalog?.models).toHaveLength(1);
+      expect(getCachedModelRoutingReferenceCost({
+        siteId: cacheId,
+        accountId: cacheId,
+        sitePlatform: 'new-api',
+        modelName: 'gpt-4o-mini',
+      })).not.toBeNull();
+      fetchMock.mockClear();
+
+      const catalog = await refreshModelPricingCatalog(buildPricingInput(platform, cacheId));
+
+      expect(catalog).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(getCachedModelRoutingReferenceCost({
+        siteId: cacheId,
+        accountId: cacheId,
+        sitePlatform: platform,
+        modelName: 'gpt-4o-mini',
+      })).toBeNull();
+    });
+
+    it('does not expose a warm routing-reference cache for the CPA platform', async () => {
+      const cacheId = 80_000 + id;
+      mockCommonPricingResponse();
+      const warmCatalog = await fetchModelPricingCatalog(buildPricingInput('new-api', cacheId));
+      expect(warmCatalog?.models).toHaveLength(1);
+      fetchMock.mockClear();
+
+      const routingCost = getCachedModelRoutingReferenceCost({
+        siteId: cacheId,
+        accountId: cacheId,
+        sitePlatform: platform,
+        modelName: 'gpt-4o-mini',
+      });
+
+      expect(routingCost).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(await fetchModelPricingCatalog(buildPricingInput(platform, cacheId))).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   it('continues requesting common pricing metadata for generic new-api sites', async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      text: async () => JSON.stringify([{
-        model_name: 'gpt-4o-mini',
-        quota_type: 0,
-        model_ratio: 1,
-        completion_ratio: 1,
-        enable_groups: ['default'],
-      }]),
-    });
+    mockCommonPricingResponse();
 
     const catalog = await fetchModelPricingCatalog(buildPricingInput('new-api', 40_001));
 

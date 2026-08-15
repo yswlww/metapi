@@ -6,6 +6,13 @@ import { mkdtempSync } from 'node:fs';
 
 type DbModule = typeof import('../../db/index.js');
 
+const NON_CPA_PLATFORM_ALIAS_CASES = [
+  { input: ' NEWAPI ', persisted: 'newapi' },
+  { input: ' OneAPI ', persisted: 'oneapi' },
+  { input: ' ANTHROPIC ', persisted: 'anthropic' },
+  { input: ' GOOGLE ', persisted: 'google' },
+] as const;
+
 describe('sites proxy settings', () => {
   let app: FastifyInstance;
   let db: DbModule['db'];
@@ -688,6 +695,53 @@ describe('sites proxy settings', () => {
     const [persisted] = await db.select().from(schema.sites).all();
     expect(persisted?.platform).toBe('cliproxyapi');
   });
+
+  it.each(NON_CPA_PLATFORM_ALIAS_CASES)(
+    'preserves pre-fix create persistence for non-CPA alias $input',
+    async ({ input, persisted }) => {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/sites',
+        payload: {
+          name: `Non-CPA Create ${persisted}`,
+          url: `https://create-${persisted}.example.com`,
+          platform: input,
+        },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ platform: persisted });
+      const [storedSite] = await db.select().from(schema.sites).all();
+      expect(storedSite?.platform).toBe(persisted);
+    },
+  );
+
+  it.each(NON_CPA_PLATFORM_ALIAS_CASES)(
+    'preserves pre-fix update persistence for non-CPA alias $input',
+    async ({ input, persisted }) => {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/sites',
+        payload: {
+          name: `Non-CPA Update ${persisted}`,
+          url: `https://update-${persisted}.example.com`,
+          platform: 'new-api',
+        },
+      });
+      expect(created.statusCode).toBe(200);
+
+      const response = await app.inject({
+        method: 'PUT',
+        url: `/api/sites/${(created.json() as { id: number }).id}`,
+        payload: { platform: input },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ platform: persisted });
+      const [storedSite] = await db.select().from(schema.sites).all();
+      expect(storedSite?.platform).toBe(persisted);
+    },
+  );
 
   it('preserves generic new-api platforms during create and update', async () => {
     const created = await app.inject({

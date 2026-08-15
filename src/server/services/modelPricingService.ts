@@ -426,6 +426,10 @@ function normalizeUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, '');
 }
 
+function isCliProxyApiPlatform(platform: unknown): boolean {
+  return normalizePlatformAlias(platform) === 'cliproxyapi';
+}
+
 function buildTokenCandidates(input: EstimateProxyCostInput): string[] {
   const candidates = [
     input.account.accessToken,
@@ -466,6 +470,17 @@ function getCacheKey(input: EstimateProxyCostInput): string {
   return `${input.site.id}:${input.account.id}`;
 }
 
+function invalidatePricingCaches(key: string): void {
+  pricingCache.delete(key);
+  routingReferenceCostCache.delete(key);
+}
+
+function invalidatePricingCachesForCliProxyApi(input: EstimateProxyCostInput): boolean {
+  if (!isCliProxyApiPlatform(input.site.platform)) return false;
+  invalidatePricingCaches(getCacheKey(input));
+  return true;
+}
+
 function normalizeModelKey(modelName: string): string {
   return modelName.trim().toLowerCase();
 }
@@ -499,7 +514,7 @@ function syncRoutingReferenceCostCache(
 }
 
 async function fetchPricingData(input: EstimateProxyCostInput): Promise<PricingData | null> {
-  if (normalizePlatformAlias(input.site.platform) === 'cliproxyapi') {
+  if (isCliProxyApiPlatform(input.site.platform)) {
     return null;
   }
 
@@ -527,6 +542,8 @@ async function fetchPricingData(input: EstimateProxyCostInput): Promise<PricingD
 }
 
 async function getPricingDataCached(input: EstimateProxyCostInput): Promise<PricingData | null> {
+  if (invalidatePricingCachesForCliProxyApi(input)) return null;
+
   const key = getCacheKey(input);
   const now = Date.now();
   const cached = pricingCache.get(key);
@@ -549,6 +566,8 @@ async function getPricingDataCached(input: EstimateProxyCostInput): Promise<Pric
 }
 
 async function refreshPricingDataCache(input: EstimateProxyCostInput): Promise<PricingData | null> {
+  if (invalidatePricingCachesForCliProxyApi(input)) return null;
+
   const key = getCacheKey(input);
   const now = Date.now();
   const data = await fetchPricingData(input);
@@ -565,9 +584,15 @@ async function refreshPricingDataCache(input: EstimateProxyCostInput): Promise<P
 export function getCachedModelRoutingReferenceCost(input: {
   siteId: number;
   accountId: number;
+  sitePlatform: string;
   modelName: string;
 }): number | null {
   const key = `${input.siteId}:${input.accountId}`;
+  if (isCliProxyApiPlatform(input.sitePlatform)) {
+    invalidatePricingCaches(key);
+    return null;
+  }
+
   const cached = routingReferenceCostCache.get(key);
   if (!cached) return null;
 

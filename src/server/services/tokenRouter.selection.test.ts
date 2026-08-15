@@ -10,7 +10,7 @@ type ConfigModule = typeof import('../config.js');
 type ProxyChannelCoordinatorModule = typeof import('./proxyChannelCoordinator.js');
 
 const mockedCatalogRoutingCost = vi.fn<(
-  input: { siteId: number; accountId: number; modelName: string }
+  input: { siteId: number; accountId: number; sitePlatform: string; modelName: string }
 ) => number | null>(() => null);
 
 vi.mock('./modelPricingService.js', async () => {
