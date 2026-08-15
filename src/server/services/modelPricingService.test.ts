@@ -18,8 +18,34 @@ import {
   calculateModelUsageCost,
   estimateProxyCost,
   fallbackTokenCost,
+  fetchModelPricingCatalog,
+  refreshModelPricingCatalog,
+  type EstimateProxyCostInput,
   type PricingModel,
 } from './modelPricingService.js';
+
+const CPA_PLATFORM_CASES = [
+  { platform: 'cliproxyapi', id: 1 },
+  { platform: ' CLIProxyAPI ', id: 2 },
+  { platform: 'cpa', id: 3 },
+  { platform: 'cli-proxy-api', id: 4 },
+] as const;
+
+function buildPricingInput(platform: string, id: number): EstimateProxyCostInput {
+  return {
+    site: {
+      id,
+      url: `https://cpa-${id}.example.com`,
+      platform,
+    },
+    account: {
+      id,
+      accessToken: 'sk-cpa',
+    },
+    modelName: 'gpt-4o-mini',
+    totalTokens: 1500,
+  };
+}
 
 describe('modelPricingService', () => {
   beforeEach(() => {
@@ -205,22 +231,49 @@ describe('modelPricingService', () => {
     expect(fallbackTokenCost(1500, 'veloera')).toBe(0.0015);
   });
 
-  it('does not request common pricing metadata from CPA during proxy billing', async () => {
-    const cost = await estimateProxyCost({
-      site: {
-        id: 8317,
-        url: 'https://cpa.example.com',
-        platform: 'cliproxyapi',
-      },
-      account: {
-        id: 42,
-        accessToken: 'sk-cpa',
-      },
-      modelName: 'gpt-4o-mini',
-      totalTokens: 1500,
+  describe.each(CPA_PLATFORM_CASES)('CPA platform $platform', ({ platform, id }) => {
+    it('does not request common pricing metadata while estimating proxy cost', async () => {
+      const input = buildPricingInput(platform, 10_000 + id);
+
+      const cost = await estimateProxyCost(input);
+
+      expect(cost).toBe(0.003);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    expect(cost).toBe(fallbackTokenCost(1500, 'cliproxyapi'));
-    expect(fetchMock).not.toHaveBeenCalled();
+    it('does not request common pricing metadata for the cached catalog', async () => {
+      const catalog = await fetchModelPricingCatalog(buildPricingInput(platform, 20_000 + id));
+
+      expect(catalog).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('does not request common pricing metadata during forced refresh', async () => {
+      const catalog = await refreshModelPricingCatalog(buildPricingInput(platform, 30_000 + id));
+
+      expect(catalog).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('continues requesting common pricing metadata for generic new-api sites', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify([{
+        model_name: 'gpt-4o-mini',
+        quota_type: 0,
+        model_ratio: 1,
+        completion_ratio: 1,
+        enable_groups: ['default'],
+      }]),
+    });
+
+    const catalog = await fetchModelPricingCatalog(buildPricingInput('new-api', 40_001));
+
+    expect(catalog?.models).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://cpa-40001.example.com/api/pricing',
+      expect.any(Object),
+    );
   });
 });

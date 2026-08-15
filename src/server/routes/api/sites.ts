@@ -18,6 +18,7 @@ import {
 import { getSiteInitializationPreset } from '../../../shared/siteInitializationPresets.js';
 import { normalizeSiteApiEndpointBaseUrl } from '../../services/siteApiEndpointService.js';
 import { analyzePrimarySiteUrl } from '../../../shared/sitePrimaryUrl.js';
+import { normalizePlatformAlias } from '../../../shared/platformIdentity.js';
 import { probeSiteModels } from '../../services/modelService.js';
 
 function sseWrite(raw: import('http').ServerResponse, event: string, data: unknown) {
@@ -108,8 +109,7 @@ function normalizeCanonicalSiteUrl(value: string): string {
 
 function normalizeSitePlatform(value: string | undefined): string | null {
   if (value === undefined) return null;
-  const normalized = value.trim().toLowerCase();
-  return normalized || null;
+  return normalizePlatformAlias(value) || null;
 }
 
 type SiteApiEndpointInputRow = {

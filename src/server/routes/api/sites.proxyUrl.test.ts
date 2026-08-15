@@ -647,6 +647,71 @@ describe('sites proxy settings', () => {
     });
   });
 
+  it.each(['cpa', 'cli-proxy-api'])('persists create platform alias %s as cliproxyapi', async (platform) => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/sites',
+      payload: {
+        name: `CPA Create ${platform}`,
+        url: `https://create-${platform}.example.com`,
+        platform,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ platform: 'cliproxyapi' });
+    const [persisted] = await db.select().from(schema.sites).all();
+    expect(persisted?.platform).toBe('cliproxyapi');
+  });
+
+  it.each(['cpa', 'cli-proxy-api'])('persists update platform alias %s as cliproxyapi', async (platform) => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/sites',
+      payload: {
+        name: `CPA Update ${platform}`,
+        url: `https://update-${platform}.example.com`,
+        platform: 'new-api',
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const siteId = (created.json() as { id: number }).id;
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/sites/${siteId}`,
+      payload: { platform },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ platform: 'cliproxyapi' });
+    const [persisted] = await db.select().from(schema.sites).all();
+    expect(persisted?.platform).toBe('cliproxyapi');
+  });
+
+  it('preserves generic new-api platforms during create and update', async () => {
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/sites',
+      payload: {
+        name: 'Generic New API',
+        url: 'https://generic-new-api.example.com',
+        platform: 'new-api',
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toMatchObject({ platform: 'new-api' });
+
+    const response = await app.inject({
+      method: 'PUT',
+      url: `/api/sites/${(created.json() as { id: number }).id}`,
+      payload: { platform: 'new-api' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ platform: 'new-api' });
+  });
+
   it('preserves /api-prefixed main site paths instead of auto-stripping them', async () => {
     const created = await app.inject({
       method: 'POST',

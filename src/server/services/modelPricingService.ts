@@ -1,4 +1,5 @@
 import type { RequestInit as UndiciRequestInit } from 'undici';
+import { normalizePlatformAlias } from '../../shared/platformIdentity.js';
 import { withSiteProxyRequestInit } from './siteProxy.js';
 import {
   buildNewApiCookieCandidates,
@@ -498,7 +499,7 @@ function syncRoutingReferenceCostCache(
 }
 
 async function fetchPricingData(input: EstimateProxyCostInput): Promise<PricingData | null> {
-  if ((input.site.platform || '').trim().toLowerCase() === 'cliproxyapi') {
+  if (normalizePlatformAlias(input.site.platform) === 'cliproxyapi') {
     return null;
   }
 
